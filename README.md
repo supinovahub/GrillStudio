@@ -11,7 +11,9 @@ Plataforma de atendimento, qualificação, agendamento e acompanhamento comercia
 
 ## Estado
 
-O repositório contém a fundação documental e as skills de engenharia. A implementação da aplicação ainda não começou.
+A fundação executável inclui a PWA em Next.js 16, Auth SSR, o shell autenticado
+da Operação, isolamento inicial por RLS, proteção de ambiente e observabilidade
+básica. Modo produção nasce desligado.
 
 ## Ambientes e execução por agentes
 
@@ -28,3 +30,34 @@ Depois que GitHub, checks obrigatórios e integração Supabase estiverem config
 ```bash
 node scripts/run-waves.mjs --run --max=3
 ```
+
+## Aplicação
+
+Use Node.js 22 e instale as dependências bloqueadas:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+```
+
+O app só inicia quando as variáveis de identidade e as credenciais públicas
+apontam de forma inequívoca para a Preview Branch do PR. Copie apenas os nomes
+de [`.env.example`](./.env.example); os valores são injetados pelo orquestrador
+e nunca são versionados.
+
+```bash
+pnpm dev
+```
+
+Checks sem credenciais:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test:unit
+```
+
+O verificador externo aguarda `Supabase Preview` no SHA, resolve credenciais
+efêmeras daquela branch, executa `build` e `test:blackbox` com fixtures
+sintéticas e publica `Agent verified`. Não há fallback para o projeto principal
+nem para Supabase local.

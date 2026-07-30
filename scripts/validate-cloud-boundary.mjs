@@ -14,15 +14,19 @@ const runtimePrefixes = [
   "tests/",
 ];
 
-const trackedFiles = execFileSync("git", ["ls-files", "-z"], {
-  encoding: "utf8",
-})
+const trackedFiles = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  {
+    encoding: "utf8",
+  },
+)
   .split("\0")
   .filter(Boolean);
 
 const failures = [];
 const trackedEnvironmentFiles = trackedFiles.filter((file) =>
-  /(^|\/)\.env($|\.)/.test(file),
+  /(^|\/)\.env($|\.)/.test(file) && !/(^|\/)\.env\.example$/.test(file),
 );
 
 if (trackedEnvironmentFiles.length > 0) {

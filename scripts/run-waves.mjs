@@ -242,7 +242,7 @@ function parseEnvironment(output) {
   return environment;
 }
 
-function resolvePreviewEnvironment(worktree, branch) {
+function resolvePreviewEnvironment(worktree, branch, prNumber) {
   const managementEnvironment = environmentWithNode(process.env);
   const cleanEnvironment = environmentWithNode(withoutSupabaseCredentials());
   const output = run(
@@ -288,11 +288,24 @@ function resolvePreviewEnvironment(worktree, branch) {
   if (supabaseUrl.includes(MAIN_PROJECT_REF)) {
     throw new Error(`Preview Branch ${branch} resolved to the main project`);
   }
+  const previewProjectRef = new URL(supabaseUrl).hostname.split(".")[0];
+  if (!/^[a-z0-9]{20}$/.test(previewProjectRef)) {
+    throw new Error(`Preview Branch ${branch} returned an invalid project ref`);
+  }
+  if (!Number.isInteger(prNumber) || prNumber < 1) {
+    throw new Error(`Preview Branch ${branch} is missing its pull request`);
+  }
 
   return {
     ...cleanEnvironment,
     ...branchEnvironment,
+    APP_BASE_URL: "http://127.0.0.1:3000",
+    APP_ENVIRONMENT: "preview",
+    APP_EXPECTED_GIT_BRANCH: branch,
+    APP_EXPECTED_SUPABASE_PROJECT_REF: previewProjectRef,
     DATABASE_URL: databaseUrl,
+    GIT_BRANCH: branch,
+    GITHUB_PR_NUMBER: String(prNumber),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: publicKey,
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: publicKey,
     NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
@@ -338,7 +351,13 @@ function verifyImplementation(worktree, environment) {
     cwd: worktree,
     env: environment,
   });
-  for (const script of ["lint", "typecheck", "test", "build"]) {
+  for (const script of [
+    "lint",
+    "typecheck",
+    "test:unit",
+    "build",
+    "test:blackbox",
+  ]) {
     if (packageHasScript(worktree, script, environment)) {
       run("pnpm", [script], { cwd: worktree, env: environment });
     }
@@ -541,7 +560,11 @@ async function verifyCurrentHead({
     cwd: worktree,
     capture: true,
   });
-  const previewEnvironment = resolvePreviewEnvironment(worktree, branch);
+  const previewEnvironment = resolvePreviewEnvironment(
+    worktree,
+    branch,
+    prNumber,
+  );
   setAgentStatus(repoRoot, sha, "pending", "Validating against Preview Branch");
 
   try {
@@ -802,7 +825,11 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
     const initialPr = currentPr(repoRoot, branch);
     prNumber = initialPr.number;
     await waitForSupabasePreview(repoRoot, prNumber);
-    const previewEnvironment = resolvePreviewEnvironment(worktree, branch);
+    const previewEnvironment = resolvePreviewEnvironment(
+      worktree,
+      branch,
+      prNumber,
+    );
     await runCodex(worktree, issue, model, previewEnvironment);
 
     const status = run("git", ["status", "--porcelain"], {
