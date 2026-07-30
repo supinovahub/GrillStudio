@@ -108,7 +108,7 @@ O backend continua autorizando cada recurso; esconder um item do menu não é co
 - saúde resumida;
 - central de alertas;
 - perfil;
-- indicação inequívoca de staging;
+- indicação inequívoca de ambiente local, piloto controlado ou produção;
 - estado global do Pedro;
 - kill switch acessível conforme permissão.
 
@@ -591,7 +591,7 @@ Filtros por usuário, sistema, IA, lead, campanha, versão e data.
 - trilha de versão;
 - diff;
 - confirmação com impacto;
-- banner de staging;
+- banner de ambiente local ou piloto;
 - toast apenas como complemento; eventos importantes persistem.
 
 ## 16. Acessibilidade e responsividade

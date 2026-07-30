@@ -18,17 +18,17 @@ Uma história só está concluída quando:
 - testes relevantes passam;
 - logs não expõem segredo ou dado sensível;
 - documentação operacional foi atualizada;
-- staging foi validado.
+- validação local/CI e piloto cloud controlado foram concluídos.
 
 ## 3. Backlog priorizado
 
 ### EPIC 0 — Fundação e ambientes
 
-**Objetivo:** base que não permita confundir staging e produção.
+**Objetivo:** base que não permita confundir desenvolvimento local, piloto controlado e produção.
 
 - criar repositório, lint, typecheck, testes e CI;
 - Next.js 16 App Router, TypeScript e Node 22;
-- Supabase local + projetos separados de staging/produção;
+- Supabase local para desenvolvimento/CI + um único projeto Supabase cloud pago para piloto e produção;
 - variáveis tipadas e cofre de segredos;
 - shell autenticado e banner de ambiente;
 - logging estruturado com trace/correlation ID;
@@ -36,7 +36,7 @@ Uma história só está concluída quando:
 - migrations, seeds e geração de tipos;
 - monitoramento inicial.
 
-**Aceite:** deploy de staging sem credenciais de produção; teste automatizado falha se variáveis proibidas estiverem misturadas.
+**Aceite:** local, CI e previews não carregam credenciais do projeto cloud; antes de leads reais, o remoto só alcança destinatários allowlisted.
 
 ### EPIC 1 — Organizações, Auth, papéis e RLS
 
@@ -456,12 +456,14 @@ Portão:
 
 ## 7. Plano de piloto
 
-### Fase A — Staging sintético
+### Fase A — Validação local e cloud vazio
 
-- usuários e leads fictícios;
+- testes automatizados e carga executados contra Supabase local;
+- projeto cloud ainda sem leads reais;
+- usuários e leads fictícios removíveis antes do lançamento;
 - números allowlisted;
 - todas as integrações;
-- carga, concorrência e falha;
+- concorrência e falhas seguras;
 - restauração testada;
 - RPO de até 15 minutos e RTO de até quatro horas comprovados no plano contratado;
 - zero contato real.

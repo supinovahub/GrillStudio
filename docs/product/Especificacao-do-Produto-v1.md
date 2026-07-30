@@ -2292,15 +2292,24 @@ O nome definitivo da plataforma não bloqueia o desenvolvimento. Nome, logotipo 
 - web/PWA responsiva;
 - Server Components para leitura;
 - ações/rotas de servidor para mutações e webhooks;
-- ambientes dev, staging e produção separados.
+- desenvolvimento e testes em Supabase local;
+- um único projeto Supabase pago na nuvem, usado primeiro no piloto controlado e depois em produção.
 
-Dev e staging:
+Desenvolvimento, CI e previews:
 
-- usam bancos, chaves e números separados da produção;
-- enviam somente para contatos de teste autorizados;
+- nunca apontam para o projeto cloud sem autorização explícita;
+- usam Supabase local, chaves de desenvolvimento e provedores simulados ou números de teste;
 - conversas reais só podem ser clonadas de forma anonimizada;
 - campanhas ficam restritas a uma allowlist de números de teste;
 - nunca disparam mensagens para leads reais.
+
+Projeto cloud único:
+
+- antes da operação real, recebe somente o piloto controlado, dados fictícios removíveis e destinatários allowlisted;
+- depois da entrada de leads reais, torna-se produção e não recebe testes destrutivos, resets ou cargas sintéticas;
+- migrations são validadas localmente, aplicadas em passos pequenos e precedidas pelas proteções de backup previstas;
+- modos sombra/assistido, feature flags, allowlists e kill switch substituem a necessidade inicial de um segundo projeto cloud;
+- um projeto cloud separado de staging pode ser adotado futuramente, mas não é requisito do MVP.
 
 ### 36.2 Dados
 
@@ -2570,4 +2579,4 @@ A rodada de grill-me foi encerrada e a transformação técnica foi concluída n
 - estratégia de testes;
 - plano de piloto.
 
-A próxima etapa prática é criar ou conectar o repositório, confirmar os cinco spikes técnicos registrados na arquitetura e iniciar a fundação de staging. Os pontos da seção 42 são preenchidos progressivamente antes do fluxo que depende deles; não é necessário resolver nome e identidade visual definitivos para começar a implementação interna.
+A próxima etapa prática é confirmar os cinco spikes técnicos registrados na arquitetura e iniciar a fundação local. O projeto Supabase pago será criado ou preparado para o piloto controlado somente quando o fluxo depender dele. Os pontos da seção 42 são preenchidos progressivamente; não é necessário resolver nome e identidade visual definitivos para começar a implementação interna.

@@ -374,7 +374,7 @@ Registra quem confirmou, texto exibido, versão, data, origem da base e campanha
 
 ### `campaign_imports` e `campaign_import_rows`
 
-Guardam arquivo privado, mapeamento, erros por linha, duplicidades, resultado e vínculo criado. As linhas de staging não viram lead até passarem pelas regras.
+Guardam arquivo privado, mapeamento, erros por linha, duplicidades, resultado e vínculo criado. As linhas temporárias de importação não viram lead até passarem pelas regras.
 
 ### `campaign_contacts`
 
