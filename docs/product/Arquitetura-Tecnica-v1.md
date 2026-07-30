@@ -38,8 +38,14 @@ flowchart LR
 
     App["Next.js PWA"] --> BFF["Server Actions e Route Handlers"]
     BFF --> DB
-    DB --> Realtime["Realtime/Push no app"]
+    DB --> Realtime["Realtime Broadcast privado"]
     Realtime --> App
+    DB --> NQ["Fila de notificações"]
+    NQ --> Push["Web Push"]
+    Push --> SW["Service Worker"]
+    SW --> OS["Notificação do sistema"]
+    OS --> App
+    NQ --> WAAlert["WhatsApp crítico sem link"]
 ```
 
 ## 3. Componentes
@@ -61,7 +67,8 @@ flowchart LR
 - Auth para usuários humanos.
 - RLS para isolamento e permissões.
 - Storage privado para imagens, PDFs, áudios, imports e anexos.
-- Realtime para atualizar inbox, alertas, Kanban, agenda e aceite de call.
+- Realtime Broadcast privado para invalidar ou atualizar inbox, alertas,
+  Kanban, agenda e aceite de call enquanto o cliente estiver conectado.
 - Basic Queues para trabalho durável.
 - Cron para despachar jobs vencidos e executar reconciliações.
 - Edge Functions para operações curtas que precisem ficar próximas do banco ou receber invocação do Cron.
@@ -226,6 +233,29 @@ O primeiro aceite válido vence por transação atômica. Aceites tardios recebe
 
 A contagem e a reserva de vaga devem ocorrer na mesma transação. Métricas aproximadas não podem decidir admissão.
 
+### 4.6 Realtime, push e fallback de alertas
+
+Toda mudança persiste primeiro no Postgres. Realtime Broadcast privado carrega
+somente uma invalidação com IDs e versão para clientes conectados; ao abrir,
+voltar a `visible` ou reconectar, o PWA consulta novamente o estado canônico.
+Kanban, conversa e contadores usam esse caminho e não geram push por serem
+atualizações de tela.
+
+Todo alerta normal, `Precisa de ação` ou `Crítico agora` permanece na
+plataforma e também gera Web Push para subscriptions ativas. Realtime e push
+compartilham `event_id` e `notification_id`, e reload, clique e sinais
+repetidos convergem para a mesma notificação persistida. Web Push é
+best-effort: permissão, push service, navegador, sistema operacional e Service
+Worker não oferecem garantia de entrega, exibição ou leitura.
+
+WhatsApp para dono/gestor continua restrito aos riscos imediatos de call já
+aprovados e não leva link. Esse fallback é disparado pela criticidade
+persistida, não por uma suposta confirmação de falha do push. O contrato
+detalhado, a matriz de plataformas e os gates estão em
+[`Contrato de Realtime e Web Push do PWA`](../research/realtime-web-push-contract.md)
+e na
+[`decisão sobre alertas persistidos`](../adr/0007-realtime-e-web-push-como-sinais.md).
+
 ## 5. Máquinas de estado
 
 ### 5.1 Oportunidade
@@ -346,7 +376,9 @@ Painéis mínimos:
 1. **Consumo de filas:** provar no projeto cloud ainda sem leads reais que a combinação Basic Queues + invocação de consumidor cumpre a latência de conversa. Se o plano/ambiente não garantir consumo frequente, incluir um worker Node dedicado antes do piloto.
 2. **Uazapi:** validar eventos, IDs, mídia, receipts, reconexão e limites reais da instância contratada.
 3. **Meta:** validar template, janela de atendimento, consentimento e mapeamento do formulário em uma conta de teste.
-4. **Realtime e push:** confirmar comportamento de background no PWA; push deve complementar, não substituir alertas persistidos.
+4. **Realtime e push:** decisão registrada: Broadcast privado acelera clientes
+   conectados, Web Push chama atenção e ambos complementam alertas persistidos.
+   A matriz física de iOS e Android continua como gate antes do piloto.
 5. **Modelos configuráveis:** testar schema de ferramentas e qualidade antes de permitir que um modelo seja publicado.
 
 Fallback automático só pode usar modelos previamente aprovados e o secundário escolhido pelo dono. Timeout, rate limit e indisponibilidade transitória podem acionar fallback depois das tentativas previstas; falha de segurança ou saída estruturalmente inválida pausa a conversa em vez de tentar outro modelo às cegas.
