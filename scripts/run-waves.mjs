@@ -473,7 +473,10 @@ async function waitForSupabasePreview(repoRoot, prNumber) {
       check.name.toLowerCase().includes("supabase preview"),
     );
 
-    if (previewChecks.some((check) => check.failed || check.skipped)) {
+    // Supabase briefly reports SKIPPED while provisioning a new Preview Branch,
+    // then transitions the same check through pending to success. Treat SKIPPED
+    // as non-terminal here; a truly unavailable preview will hit the timeout.
+    if (previewChecks.some((check) => check.failed)) {
       throw new Error(`Supabase Preview failed for PR #${prNumber}`);
     }
 
