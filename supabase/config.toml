@@ -1,0 +1,33 @@
+# Explicit settings deployed by the official Supabase GitHub integration.
+# Omitted CLI defaults are intentionally not promoted to the main project.
+project_id = "grillstudio"
+
+[api]
+enabled = true
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+major_version = 17
+
+[db.migrations]
+enabled = true
+schema_paths = []
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[realtime]
+enabled = true
+
+[storage]
+enabled = true
+
+[auth]
+enabled = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true

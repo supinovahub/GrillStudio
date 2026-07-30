@@ -28,7 +28,7 @@ Este pacote transforma a [Especificação do Produto v1](./Especificacao-do-Prod
 - Banco de dados como estado canônico. Nenhuma regra operacional depende da “memória” do modelo.
 - Processamento assíncrono com entrega pelo menos uma vez e consumidores idempotentes.
 - `scheduled_jobs` como agenda durável de lembretes, follow-ups, campanhas e prazos; sem timers em memória.
-- Supabase local gratuito para desenvolvimento/testes e um único projeto Supabase pago na nuvem, usado primeiro no piloto controlado e depois em produção.
+- Um único projeto Supabase pago como linha principal, com Preview Branches cloud efêmeras e sem dados por pull request para desenvolvimento, CI e previews.
 - Toda tabela exposta tem RLS; segredos ficam fora do schema exposto e nunca chegam ao navegador.
 
 ## Portões antes de produção
@@ -39,7 +39,7 @@ O MVP só entra em produção depois que:
 - duplicidade de webhook, envio e aceite de call estiver coberta por idempotência;
 - opt-out interromper mensagens mesmo quando competir com um envio já enfileirado;
 - a extração e a próxima ação atingirem pelo menos 90% no conjunto de avaliação aprovado;
-- local, CI, previews e piloto controlado não conseguirem atingir leads reais por engano;
+- worktrees, CI e previews usarem somente a Preview Branch do pull request e não conseguirem atingir o projeto principal nem leads reais por engano;
 - o caminho de consumo das filas cumprir a latência esperada no plano Supabase escolhido;
 - alertas, reconciliação e recuperação de falhas tiverem sido exercitados;
 - o dono habilitar explicitamente a IA em produção ou em uma campanha específica.

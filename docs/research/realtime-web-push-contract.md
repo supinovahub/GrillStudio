@@ -605,7 +605,8 @@ O probe físico é aprovado somente se:
 - o piloto documentar dispositivos suportados, pessoa de plantão, procedimento
   para push desativado e execução ensaiada do fallback crítico;
 - métricas, quotas e alertas do único projeto Supabase pago forem configurados
-  antes de usuários reais, mantendo desenvolvimento e CI no Supabase local.
+  antes de usuários reais, mantendo desenvolvimento e CI em Preview Branches
+  efêmeras e sem dados.
 
 ## 12. Gates de produção
 

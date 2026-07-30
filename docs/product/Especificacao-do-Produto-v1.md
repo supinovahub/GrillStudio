@@ -2296,13 +2296,14 @@ O nome definitivo da plataforma não bloqueia o desenvolvimento. Nome, logotipo 
 - web/PWA responsiva;
 - Server Components para leitura;
 - ações/rotas de servidor para mutações e webhooks;
-- desenvolvimento e testes em Supabase local;
-- um único projeto Supabase pago na nuvem, usado primeiro no piloto controlado e depois em produção.
+- desenvolvimento, CI e previews em Preview Branches Supabase cloud efêmeras e sem dados;
+- um único projeto Supabase pago como linha principal, usado primeiro no piloto controlado e depois em produção.
 
 Desenvolvimento, CI e previews:
 
-- nunca apontam para o projeto cloud sem autorização explícita;
-- usam Supabase local, chaves de desenvolvimento e provedores simulados ou números de teste;
+- nunca apontam para o projeto principal;
+- usam exclusivamente a Preview Branch efêmera do pull request, credenciais próprias da branch e provedores simulados ou números de teste;
+- não dependem de Supabase local;
 - conversas reais só podem ser clonadas de forma anonimizada;
 - campanhas ficam restritas a uma allowlist de números de teste;
 - nunca disparam mensagens para leads reais.
@@ -2311,7 +2312,7 @@ Projeto cloud único:
 
 - antes da operação real, recebe somente o piloto controlado, dados fictícios removíveis e destinatários allowlisted;
 - depois da entrada de leads reais, torna-se produção e não recebe testes destrutivos, resets ou cargas sintéticas;
-- migrations são validadas localmente, aplicadas em passos pequenos e precedidas pelas proteções de backup previstas;
+- migrations são validadas na Preview Branch, aplicadas em passos pequenos e precedidas pelas proteções de backup previstas;
 - modos sombra/assistido, feature flags, allowlists e kill switch substituem a necessidade inicial de um segundo projeto cloud;
 - um projeto cloud separado de staging pode ser adotado futuramente, mas não é requisito do MVP.
 

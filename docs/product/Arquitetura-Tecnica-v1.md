@@ -330,14 +330,15 @@ Estratégias:
 
 ## 7. Ambientes e segredos
 
-### Local e CI
+### Desenvolvimento, CI e previews
 
-- Supabase local em containers, sem projeto cloud pago adicional;
+- cada pull request usa uma Preview Branch Supabase cloud, efêmera, sem cópia de dados do projeto principal;
+- worktree, agente, CI e preview recebem apenas credenciais da branch correspondente ao PR;
 - dados sintéticos e seeds reproduzíveis;
 - integrações externas simuladas ou restritas a destinatários de teste;
-- chaves próprias de desenvolvimento com limites baixos;
-- nenhum preview ou teste automatizado aponta para o projeto cloud;
-- migrations, RLS, filas e funções são validadas localmente antes do remoto.
+- nenhum preview ou teste automatizado aponta para o projeto principal;
+- migrations, RLS, filas e funções são validadas na Preview Branch antes do merge;
+- a ausência ou ambiguidade da Preview Branch bloqueia o teste e o merge, sem fallback para o projeto principal.
 
 ### Projeto cloud único
 
@@ -345,7 +346,7 @@ Estratégias:
 - antes da entrada de leads reais, ele funciona como ambiente do piloto controlado, com allowlist e produção da IA desligada;
 - depois do início da operação real, ele é produção e deixa de receber testes destrutivos, resets ou cargas sintéticas;
 - não se simulam staging e produção em schemas diferentes do mesmo banco;
-- migrations remotas são pequenas, forward-only quando possível, precedidas por backup e verificações locais;
+- migrations remotas são pequenas, forward-only quando possível, precedidas por backup e verificações na Preview Branch;
 - acesso administrativo é mínimo;
 - backups/PITR seguem o plano contratado e a restauração é ensaiada para RPO de até 15 minutos e RTO de até quatro horas;
 - logs usam retenção e redação de dados sensíveis;

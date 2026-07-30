@@ -18,17 +18,17 @@ Uma história só está concluída quando:
 - testes relevantes passam;
 - logs não expõem segredo ou dado sensível;
 - documentação operacional foi atualizada;
-- validação local/CI e piloto cloud controlado foram concluídos.
+- validação na Preview Branch/CI e piloto cloud controlado foram concluídos.
 
 ## 3. Backlog priorizado
 
 ### EPIC 0 — Fundação e ambientes
 
-**Objetivo:** base que não permita confundir desenvolvimento local, piloto controlado e produção.
+**Objetivo:** base que não permita confundir Preview Branch, piloto controlado e produção.
 
 - criar repositório, lint, typecheck, testes e CI;
 - Next.js 16 App Router, TypeScript e Node 22;
-- Supabase local para desenvolvimento/CI + um único projeto Supabase cloud pago para piloto e produção;
+- Preview Branch Supabase cloud efêmera por PR para desenvolvimento/CI + um único projeto principal pago para piloto e produção;
 - variáveis tipadas e cofre de segredos;
 - shell autenticado e banner de ambiente;
 - logging estruturado com trace/correlation ID;
@@ -36,7 +36,7 @@ Uma história só está concluída quando:
 - migrations, seeds e geração de tipos;
 - monitoramento inicial.
 
-**Aceite:** local, CI e previews não carregam credenciais do projeto cloud; antes de leads reais, o remoto só alcança destinatários allowlisted.
+**Aceite:** worktrees, CI e previews carregam apenas credenciais da Preview Branch correspondente e não alcançam o projeto principal; antes de leads reais, qualquer egress permitido só alcança destinatários allowlisted.
 
 ### EPIC 1 — Organizações, Auth, papéis e RLS
 
@@ -462,9 +462,9 @@ Portão:
 
 ## 7. Plano de piloto
 
-### Fase A — Validação local e cloud vazio
+### Fase A — Validação em Preview Branch e projeto principal vazio
 
-- testes automatizados e carga executados contra Supabase local;
+- testes automatizados e carga executados contra Preview Branches efêmeras;
 - projeto cloud ainda sem leads reais;
 - usuários e leads fictícios removíveis antes do lançamento;
 - números allowlisted;
