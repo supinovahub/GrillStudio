@@ -1645,7 +1645,7 @@ Cada item mostra lead, motivo, espera, dono atual, última mensagem e ação.
 
 ### 28.3 Alertas
 
-- **Acompanhar:** plataforma;
+- **Acompanhar:** plataforma + push;
 - **Precisa de ação:** plataforma + push;
 - **Crítico agora:** plataforma + push;
 - WhatsApp somente para risco imediato de call:
