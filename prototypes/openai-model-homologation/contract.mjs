@@ -276,6 +276,7 @@ const TRANSIENT_MODEL_FAILURES = new Set([
   "rate_limit",
   "provider_5xx",
 ]);
+const FALLBACK_PHASES = new Set(["prepared", "request_started"]);
 
 const STOP_FAILURES = new Set([
   "invalid_schema",
@@ -360,6 +361,12 @@ export function decideRecovery(input) {
   }
 
   if (failure === "model_unavailable" || failure === "model_deprecated") {
+    if (!FALLBACK_PHASES.has(phase)) {
+      return {
+        action: "pause_and_escalate",
+        reason: "The completed model response closes the automatic fallback boundary.",
+      };
+    }
     return approved_fallback_available
       ? {
           action: "fallback_model",
@@ -372,6 +379,12 @@ export function decideRecovery(input) {
   }
 
   if (TRANSIENT_MODEL_FAILURES.has(failure)) {
+    if (!FALLBACK_PHASES.has(phase)) {
+      return {
+        action: "pause_and_escalate",
+        reason: "The completed model response closes the automatic fallback boundary.",
+      };
+    }
     if (same_model_retries_remaining > 0) {
       return {
         action: "retry_same_model",

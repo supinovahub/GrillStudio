@@ -734,7 +734,7 @@ export const RECOVERY_CASES = [
     id: "retry_connect_timeout_before_effect",
     input: {
       failure: "connect_timeout",
-      phase: "request_in_flight",
+      phase: "request_started",
       same_model_retries_remaining: 1,
       approved_fallback_available: true,
     },
@@ -744,7 +744,7 @@ export const RECOVERY_CASES = [
     id: "fallback_after_transient_budget_exhausted",
     input: {
       failure: "rate_limit",
-      phase: "request_in_flight",
+      phase: "request_started",
       same_model_retries_remaining: 0,
       approved_fallback_available: true,
     },
@@ -820,7 +820,7 @@ export const RECOVERY_CASES = [
     id: "rebuild_oversized_context",
     input: {
       failure: "context_too_large",
-      phase: "request_in_flight",
+      phase: "request_started",
       approved_fallback_available: true,
     },
     expected_action: "rebuild_context_then_retry",
@@ -829,7 +829,7 @@ export const RECOVERY_CASES = [
     id: "fallback_deprecated_primary",
     input: {
       failure: "model_deprecated",
-      phase: "request_in_flight",
+      phase: "request_started",
       approved_fallback_available: true,
     },
     expected_action: "fallback_model",
@@ -838,7 +838,17 @@ export const RECOVERY_CASES = [
     id: "pause_auth_failure",
     input: {
       failure: "auth_failure",
-      phase: "request_in_flight",
+      phase: "request_started",
+      approved_fallback_available: true,
+    },
+    expected_action: "pause_and_escalate",
+  },
+  {
+    id: "pause_transient_after_model_buffered",
+    input: {
+      failure: "provider_5xx",
+      phase: "model_buffered",
+      same_model_retries_remaining: 1,
       approved_fallback_available: true,
     },
     expected_action: "pause_and_escalate",
