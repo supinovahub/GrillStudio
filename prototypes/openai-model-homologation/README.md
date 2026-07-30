@@ -33,27 +33,43 @@ key through the environment:
 OPENAI_API_KEY=... node prototypes/openai-model-homologation/harness.mjs \
   --live \
   --confirm-live \
-  --models=gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna \
-  --runs=1
+  --models=gpt-5.6-sol \
+  --runs=1 \
+  --max-calls=109
 ```
 
 The key is read only from `OPENAI_API_KEY`; it is never printed or written.
 Live mode uses only synthetic Portuguese inputs, sets `store: false`, performs
-no external tool effect, and prints JSON results to stdout. Five repetitions
-per scenario are required for production homologation; `--runs=1` is only a
-smoke test. The command refuses live execution unless `--confirm-live` is
-present.
+no external tool effect, and prints JSON results to stdout. The harness makes
+two calls per semantic case: one strict decision-envelope call and one actual
+tool-selection call with the complete ten-tool catalog. It also makes nine
+technical calls per model for the full strict catalog, four invalid schemas,
+manual continuity replay, buffered streaming, and incomplete-output
+classification.
+
+Five repetitions per scenario are required for production homologation;
+`--runs=1` is only a smoke test. A complete three-model run plans 1,527 calls,
+so the command refuses live execution unless `--confirm-live` is present and
+the plan fits the explicit `--max-calls` cap. Review current pricing and the
+resulting cost before raising that cap.
 
 ## What this prototype does
 
 - declares strict JSON Schemas for the Pedro decision and all ten proposed
   tools;
 - keeps `parallel_tool_calls` disabled for the side-effecting tool catalog;
-- validates synthetic cases without contacting OpenAI;
+- validates a catalog of 50 distinct synthetic cases without contacting
+  OpenAI;
 - exercises a pure recovery decision function over transient failures,
   structural failures, partial replies, and tool-effect phases;
-- can probe a model with the Responses API and record the returned model,
-  schema result, action/tool match, latency, token usage, and estimated cost.
+- can probe all ten tools with the Responses API and score schema, next action,
+  exact qualification fields, accepted synthetic values, tool selection,
+  domain-constrained arguments, prohibited actions, latency, tokens and
+  estimated cost;
+- contains live probes for invalid schemas, manual multi-turn replay with
+  `store: false`, buffered SSE, and incomplete-response classification;
+- emits gate inputs, but never auto-approves a profile; blind human `pt-BR`
+  review and owner approval remain external.
 
 ## What it deliberately does not do
 
@@ -63,4 +79,5 @@ present.
   knowledge;
 - approve a model from one smoke test;
 - stream content to a lead before the complete response passes policy checks;
+- persist provider-side response state or use `previous_response_id`;
 - implement the production orchestrator.
