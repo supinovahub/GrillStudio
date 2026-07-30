@@ -1,7 +1,8 @@
 ---
-status: accepted
+status: superseded
+superseded_by: 0009-preview-branches-supabase-como-ambiente-de-desenvolvimento-e-ci
 ---
 
 # Um único projeto Supabase pago
 
-O GrillStudio usa Supabase local gratuito para desenvolvimento e testes e mantém exatamente um projeto Supabase pago na nuvem, usado primeiro no piloto controlado e depois como produção. A economia de um segundo projeto cloud é aceita em troca de não haver staging remoto depois do lançamento; o risco é compensado por testes locais completos, previews sem acesso ao remoto, migrations pequenas com backup, allowlists, modos sombra/assistido, feature flags e kill switch.
+Esta decisão registrou originalmente Supabase local para desenvolvimento e testes, com exatamente um projeto pago na nuvem. A restrição de um único projeto principal permanece, mas a obrigação de banco local foi substituída pela ADR 0009 após autorização explícita para usar Preview Branches cloud efêmeras por pull request.
