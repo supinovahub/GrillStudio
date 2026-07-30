@@ -29,9 +29,9 @@ This is a single-context repository with one root `CONTEXT.md` and system-wide A
 
 ## Safety
 
-- Treat staging and production as separate systems.
-- Never send staging messages to real leads.
+- Use Supabase local for development and automated tests, and exactly one paid Supabase cloud project for the controlled pilot and production.
+- Never point local, CI or preview deployments at the cloud project without explicit user authorization.
+- Before real leads enter the cloud project, keep every outbound integration restricted to an allowlist; after launch, never run destructive tests there.
 - Never mutate production infrastructure, data, campaigns, WhatsApp connections, or AI activation without explicit user authorization.
 - Preserve unrelated user changes.
 - Keep secrets out of the browser, repository, logs, fixtures, screenshots, and issue bodies.
-

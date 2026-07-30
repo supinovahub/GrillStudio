@@ -186,7 +186,7 @@ O atraso nunca é um `sleep` longo. É um job durável com `run_at`.
 ### 4.3 Campanha de reativação
 
 1. dono/gestor importa CSV;
-2. sistema cria staging rows e relatório de qualidade;
+2. sistema cria linhas temporárias de importação e relatório de qualidade;
 3. usuário confirma consentimento e escolhe número ativo;
 4. Pedro prepara variações e a revisão final;
 5. usuário aprova campanha e ativa a IA especificamente nela;
@@ -294,22 +294,26 @@ Estratégias:
 
 ## 7. Ambientes e segredos
 
-### Staging
+### Local e CI
 
-- projeto Supabase separado;
-- conexões WhatsApp próprias;
-- allowlist de destinatários;
-- chaves OpenAI próprias e limite baixo;
-- dados sintéticos ou mascarados;
-- modo produção da IA desligado por padrão.
+- Supabase local em containers, sem projeto cloud pago adicional;
+- dados sintéticos e seeds reproduzíveis;
+- integrações externas simuladas ou restritas a destinatários de teste;
+- chaves próprias de desenvolvimento com limites baixos;
+- nenhum preview ou teste automatizado aponta para o projeto cloud;
+- migrations, RLS, filas e funções são validadas localmente antes do remoto.
 
-### Produção
+### Projeto cloud único
 
-- projeto, domínio, buckets, filas e chaves separados;
-- acesso administrativo mínimo;
-- backups/PITR conforme plano contratado e restauração ensaiada para RPO de até 15 minutos e RTO de até quatro horas;
-- logs com retenção e redação de dados sensíveis;
-- feature flags para campanhas, conectores, personas e modelos.
+- existe exatamente um projeto Supabase pago na nuvem;
+- antes da entrada de leads reais, ele funciona como ambiente do piloto controlado, com allowlist e produção da IA desligada;
+- depois do início da operação real, ele é produção e deixa de receber testes destrutivos, resets ou cargas sintéticas;
+- não se simulam staging e produção em schemas diferentes do mesmo banco;
+- migrations remotas são pequenas, forward-only quando possível, precedidas por backup e verificações locais;
+- acesso administrativo é mínimo;
+- backups/PITR seguem o plano contratado e a restauração é ensaiada para RPO de até 15 minutos e RTO de até quatro horas;
+- logs usam retenção e redação de dados sensíveis;
+- feature flags, modos sombra/assistido, allowlists e kill switch controlam a liberação.
 
 Segredos de provedores ficam em cofre/variáveis do servidor ou schema privado, nunca em `NEXT_PUBLIC_*`, respostas do browser ou metadata editável pelo usuário.
 
@@ -339,7 +343,7 @@ Painéis mínimos:
 
 ## 9. Decisões que exigem spike
 
-1. **Consumo de filas:** provar em staging que a combinação Basic Queues + invocação de consumidor cumpre a latência de conversa. Se o plano/ambiente não garantir consumo frequente, incluir um worker Node dedicado antes de produção.
+1. **Consumo de filas:** provar no projeto cloud ainda sem leads reais que a combinação Basic Queues + invocação de consumidor cumpre a latência de conversa. Se o plano/ambiente não garantir consumo frequente, incluir um worker Node dedicado antes do piloto.
 2. **Uazapi:** validar eventos, IDs, mídia, receipts, reconexão e limites reais da instância contratada.
 3. **Meta:** validar template, janela de atendimento, consentimento e mapeamento do formulário em uma conta de teste.
 4. **Realtime e push:** confirmar comportamento de background no PWA; push deve complementar, não substituir alertas persistidos.
