@@ -58,6 +58,17 @@ function fail(message) {
 
 function strictSchemaErrors(schema, path = "$", isRoot = true) {
   const errors = [];
+  for (const keyword of [
+    "allOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "dependentRequired",
+    "dependentSchemas",
+  ]) {
+    if (keyword in schema) errors.push(`${path} uses unsupported keyword ${keyword}`);
+  }
   if (isRoot && schema.anyOf) errors.push(`${path} root must not use anyOf`);
   const types = Array.isArray(schema.type) ? schema.type : [schema.type].filter(Boolean);
   if (types.includes("object")) {
@@ -109,6 +120,13 @@ function validateCaseCatalog() {
     for (const name of testCase.expected.tool_names) {
       if (!toolNames.has(name)) errors.push(`${testCase.id} expects unknown tool ${name}`);
     }
+    if (testCase.expected.tool_names.includes("record_qualification_patch")) {
+      for (const criterion of testCase.expected.qualification_criteria) {
+        if (!(criterion in (testCase.expected.qualification_values ?? {}))) {
+          errors.push(`${testCase.id} has no accepted value oracle for ${criterion}`);
+        }
+      }
+    }
   }
   if (SYNTHETIC_CASES.length < 50) {
     errors.push(`catalog has ${SYNTHETIC_CASES.length} cases; at least 50 are required`);
@@ -123,6 +141,11 @@ function validateCaseCatalog() {
 
 function runLocal() {
   const errors = [...validateToolSchemas(), ...validateCaseCatalog()];
+  for (const probe of INVALID_SCHEMA_PROBES) {
+    if (strictSchemaErrors(probe.parameters).length === 0) {
+      errors.push(`negative schema probe ${probe.id} is not detectably invalid`);
+    }
+  }
   for (const recoveryCase of RECOVERY_CASES) {
     const actual = decideRecovery(recoveryCase.input);
     if (actual.action !== recoveryCase.expected_action) {
@@ -188,6 +211,34 @@ function normalizeSemanticValue(value) {
     .trim();
 }
 
+function qualificationPatchErrors(testCase, patches) {
+  const errors = [];
+  const actualPatches = Array.isArray(patches) ? patches : [];
+  const criteria = actualPatches.map((patch) => patch.criterion_id);
+  if (!sameSet(criteria, testCase.expected.qualification_criteria)) {
+    errors.push("qualification criteria do not exactly match the expected patch");
+  }
+  const messageId = `synthetic-message-${testCase.id}`;
+  if (
+    actualPatches.some((patch) => patch.evidence_message_id !== messageId)
+  ) {
+    errors.push("qualification patch is not evidenced by the current message");
+  }
+  const actualByCriterion = new Map(
+    actualPatches.map((patch) => [patch.criterion_id, patch.value]),
+  );
+  for (const [criterion, acceptedValues] of Object.entries(
+    testCase.expected.qualification_values ?? {},
+  )) {
+    const actual = normalizeSemanticValue(actualByCriterion.get(criterion) ?? "");
+    const accepted = acceptedValues.map(normalizeSemanticValue);
+    if (!accepted.includes(actual)) {
+      errors.push(`${criterion} value is not one of the accepted synthetic labels`);
+    }
+  }
+  return errors;
+}
+
 function semanticToolErrors(testCase, toolName, toolArguments) {
   if (toolName === "none") return toolArguments ? ["none must not have arguments"] : [];
   const definition = TOOL_DEFINITIONS.find((item) => item.name === toolName);
@@ -197,31 +248,8 @@ function semanticToolErrors(testCase, toolName, toolArguments) {
     errors.push("expected_version does not match the synthetic state");
   }
 
-  const messageId = `synthetic-message-${testCase.id}`;
   if (toolName === "record_qualification_patch") {
-    const criteria = (toolArguments?.patches ?? []).map((patch) => patch.criterion_id);
-    if (!sameSet(criteria, testCase.expected.qualification_criteria)) {
-      errors.push("qualification criteria do not exactly match the expected patch");
-    }
-    if (
-      (toolArguments?.patches ?? []).some(
-        (patch) => patch.evidence_message_id !== messageId,
-      )
-    ) {
-      errors.push("qualification patch is not evidenced by the current message");
-    }
-    const actualByCriterion = new Map(
-      (toolArguments?.patches ?? []).map((patch) => [patch.criterion_id, patch.value]),
-    );
-    for (const [criterion, acceptedValues] of Object.entries(
-      testCase.expected.qualification_values ?? {},
-    )) {
-      const actual = normalizeSemanticValue(actualByCriterion.get(criterion) ?? "");
-      const accepted = acceptedValues.map(normalizeSemanticValue);
-      if (!accepted.includes(actual)) {
-        errors.push(`${criterion} value is not one of the accepted synthetic labels`);
-      }
-    }
+    errors.push(...qualificationPatchErrors(testCase, toolArguments?.patches));
   }
   if (toolName === "answer_from_knowledge") {
     const approved = (testCase.state.knowledge ?? [])
@@ -284,7 +312,10 @@ function semanticToolErrors(testCase, toolName, toolArguments) {
     if (toolArguments?.scope !== "organization") {
       errors.push("opt-out scope must be organization");
     }
-    if (toolArguments?.evidence_message_id !== messageId) {
+    if (
+      toolArguments?.evidence_message_id !==
+      `synthetic-message-${testCase.id}`
+    ) {
       errors.push("opt-out is not evidenced by the current message");
     }
   }
@@ -293,13 +324,11 @@ function semanticToolErrors(testCase, toolName, toolArguments) {
 
 function scoreCase(testCase, parsed) {
   const schemaErrors = validateAgainstSchema(PEDRO_TURN_SCHEMA, parsed);
-  const actualCriteria = new Set(
-    Array.isArray(parsed?.qualification_patch)
-      ? parsed.qualification_patch.map((patch) => patch.criterion_id)
-      : [],
-  );
-  const expectedCriteria = testCase.expected.qualification_criteria;
   const toolName = parsed?.tool?.name;
+  const qualificationErrors = qualificationPatchErrors(
+    testCase,
+    parsed?.qualification_patch,
+  );
   const semanticErrors = semanticToolErrors(
     testCase,
     toolName,
@@ -313,7 +342,11 @@ function scoreCase(testCase, parsed) {
     tool_arguments_correct: semanticErrors.length === 0,
     tool_argument_errors: semanticErrors,
     prohibited_tool_absent: !testCase.expected.forbidden_tools.includes(toolName),
-    qualification_patch_exact: sameSet([...actualCriteria], expectedCriteria),
+    qualification_patch_valid: qualificationErrors.length === 0,
+    qualification_patch_errors: qualificationErrors,
+    critical_text_review: testCase.expected.critical
+      ? "pending_manual_blind_review"
+      : "not_required",
   };
 }
 
@@ -615,16 +648,21 @@ async function requestManualReplayProbe(model) {
   } catch {
     parsed = null;
   }
+  const budget = normalizeSemanticValue(parsed?.budget ?? "");
+  const region = normalizeSemanticValue(parsed?.region ?? "");
+  const valuesPreserved =
+    ["600 mil", "600000"].map(normalizeSemanticValue).includes(budget) &&
+    region === normalizeSemanticValue("Vila Mariana");
   return {
     ok:
       secondResponse.ok &&
       second.status === "completed" &&
-      parsed?.budget !== null &&
-      parsed?.region !== null,
+      valuesPreserved,
     first_status: firstResponse.status,
     second_status: secondResponse.status,
     returned_model: second.model ?? null,
     replayed_output_items: (first.output ?? []).length,
+    expected_values_preserved: valuesPreserved,
     parsed,
     error_type: second?.error?.type ?? null,
   };
@@ -738,6 +776,13 @@ function summarizeLiveResults(results) {
       (item) => item.id,
     ),
   );
+  const extractionIds = new Set(
+    SYNTHETIC_CASES.filter((item) =>
+      ["qualification_extraction", "qualification_patch", "changed_criterion"].includes(
+        item.category,
+      ),
+    ).map((item) => item.id),
+  );
   const decisionPass = (item) =>
     item.result.ok &&
     item.result.score?.schema_valid &&
@@ -745,7 +790,7 @@ function summarizeLiveResults(results) {
     item.result.score?.tool_correct &&
     item.result.score?.tool_arguments_correct &&
     item.result.score?.prohibited_tool_absent &&
-    item.result.score?.qualification_patch_exact;
+    item.result.score?.qualification_patch_valid;
   const toolPass = (item) =>
     item.result.ok &&
     item.result.at_most_one_tool &&
@@ -763,13 +808,17 @@ function summarizeLiveResults(results) {
     decision_cases: decisions.length,
     tool_selection_cases: tools.length,
     schema_valid_rate: ratio(decisions, (item) => item.result.score?.schema_valid),
+    qualification_extraction_accuracy: ratio(
+      decisions.filter((item) => extractionIds.has(item.case_id)),
+      (item) => item.result.score?.qualification_patch_valid,
+    ),
     next_action_accuracy: ratio(decisions, (item) => item.result.score?.next_action_correct),
     tool_and_arguments_accuracy: ratio(tools, toolPass),
     no_tool_accuracy: ratio(
       tools.filter((item) => noToolIds.has(item.case_id)),
       toolPass,
     ),
-    critical_decision_pass_rate: ratio(
+    critical_structured_pass_rate: ratio(
       decisions.filter((item) => criticalIds.has(item.case_id)),
       decisionPass,
     ),
@@ -785,6 +834,7 @@ function summarizeLiveResults(results) {
     measured_request_cost_usd: Number(
       costs.reduce((total, value) => total + value, 0).toFixed(6),
     ),
+    critical_text_safety_gate: "pending_manual_blind_review",
     human_pt_br_gate: "pending_manual_blind_review",
     production_approval: "never_automatic",
   };

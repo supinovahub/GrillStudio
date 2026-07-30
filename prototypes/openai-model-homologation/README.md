@@ -69,7 +69,8 @@ resulting cost before raising that cap.
 - contains live probes for invalid schemas, manual multi-turn replay with
   `store: false`, buffered SSE, and incomplete-response classification;
 - emits gate inputs, but never auto-approves a profile; blind human `pt-BR`
-  review and owner approval remain external.
+  review, including every critical reply for prohibited claims, and owner
+  approval remain external.
 
 ## What it deliberately does not do
 
