@@ -102,6 +102,7 @@ toolset_version
 schema_hash
 parallel_tool_calls
 stream_policy
+continuity_mode
 ```
 
 `instructions_version` identifica o template e o contrato estável enviados ao
@@ -131,12 +132,13 @@ conteúdo e ficam vinculadas à execução.
 | `parallel_tool_calls` | `false` |
 | `service_tier` | `default`; Fast é outro perfil |
 | `stream` | permitido para telemetria/simulador; buffer completo em produção |
+| continuidade | replay manual dos itens necessários com `store: false` |
 | `temperature` / `top_p` | omitidos no baseline; só entram após probe oficial |
 
-`previous_response_id` pode otimizar continuidade enquanto as versões
-comportamental e factual forem compatíveis. Ele nunca substitui o estado
-reconstruído do banco. Como `instructions` anteriores não são herdadas nessa
-continuidade, o orquestrador as envia novamente.
+`previous_response_id` fica fora do baseline porque o perfil aprovado usa
+`store: false`. Adotá-lo exige um perfil separado, decisão explícita de
+retenção no provedor e novo probe. Em qualquer modo, ele nunca substitui o
+estado reconstruído do banco, e `instructions` são reenviadas em todo turno.
 
 ### 3.2 Contrato de ferramentas
 
@@ -187,7 +189,7 @@ Probes positivos:
 - escolher uma ferramenta correta entre o catálogo completo;
 - retornar exatamente zero ou uma função com
   `parallel_tool_calls: false`;
-- continuar por `previous_response_id` com `instructions` reenviadas;
+- continuar por replay manual com `store: false` e `instructions` reenviadas;
 - classificar mensagem, função, recusa, incompletude e erro;
 - emitir e finalizar eventos SSE sem executar ou expor deltas prematuros;
 - registrar modelo efetivo, tokens, cache, reasoning, latência e custo.
@@ -506,6 +508,8 @@ Executado localmente, sem API key:
 - carregamento e validação estrutural de 10 schemas de ferramenta;
 - catálogo de 50 casos sintéticos cobrindo qualificação, FAQ, ambiguidade,
   agendamento, follow-up, opt-out, escaladas, promessa proibida e injection;
+- oráculos de campo, valor e evidência para os 12 casos que propõem patch de
+  qualificação;
 - cobertura positiva das 10 ferramentas e quatro schemas negativos;
 - 13 transições da política de retry/fallback/pausa;
 - resultado: 50 casos catalogados, 13 de 13 transições corretas e zero chamada
@@ -513,7 +517,7 @@ Executado localmente, sem API key:
 - validação de sintaxe Node.js e `git diff --check`.
 
 O protótipo primário está preservado fora da main no commit
-[`d75276c`](https://github.com/supinovahub/GrillStudio/tree/d75276c5e51765d649a4b87f5b90146062ed1c6e/prototypes/openai-model-homologation).
+[`8a9a55f`](https://github.com/supinovahub/GrillStudio/tree/8a9a55f4d73add645b264d64fe8cf728a2c2384e/prototypes/openai-model-homologation).
 
 O protótipo não aprovou nenhum modelo. Permanecem gates:
 
@@ -522,6 +526,7 @@ O protótipo não aprovou nenhum modelo. Permanecem gates:
 - probes live de continuidade manual, streaming e schemas inválidos;
 - 50 casos completos × 5 execuções por perfil no harness;
 - qualidade semântica e `pt-BR`;
+- revisão cega do texto de todos os casos críticos;
 - custo e latência reais;
 - sombra/assistido com revisão humana;
 - validação live dos tetos técnicos de custo.

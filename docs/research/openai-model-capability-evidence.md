@@ -99,6 +99,7 @@ schema_hash
 parallel_tool_calls
 max_output_tokens
 store
+continuity_mode
 ```
 
 `instructions_version` aqui identifica o template/contrato estável. Persona,
@@ -238,11 +239,12 @@ O contrato do Pedro deve preferir contexto explícito compilado do banco:
 
 - reconstruir a entrada a partir de estado, evidências e versões canônicas;
 - reenviar `instructions` em cada turno;
-- usar continuidade da API apenas como otimização de contexto/raciocínio;
+- usar replay manual dos itens necessários com `store: false` no baseline;
 - nunca usar memória do provedor para decidir opt-out, ownership, capacidade,
   call, disponibilidade, preço ou ação já executada;
 - incluir o identificador da resposta anterior somente enquanto ele continuar
-  coerente com a versão comportamental e factual atribuída.
+  coerente com a versão comportamental e factual atribuída e somente em um
+  perfil separado que aprove explicitamente a retenção no provedor.
 
 O guia do GPT-5.6 documenta `reasoning.effort` em `none`, `low`, `medium`,
 `high`, `xhigh` e `max`, com `medium` como default, e recomenda testar a mesma

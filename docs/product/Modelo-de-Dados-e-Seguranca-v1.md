@@ -174,7 +174,7 @@ Aprovar aprendizado não edita instrução em uso. Cria rascunho, roda regressõ
 ### `model_profiles`
 
 - provedor e identificador do modelo;
-- endpoint, modelo solicitado e modelo retornado pelo probe;
+- endpoint e modelo solicitado;
 - parâmetros permitidos e seus valores efetivos;
 - versão do template/contrato de instructions, schema e toolset;
 - hashes canônicos do perfil e do schema;
@@ -195,7 +195,8 @@ fazem parte de seu hash.
 - conexão BYOK/segredo referenciada, nunca o segredo;
 - perfil primário aprovado;
 - perfil de fallback aprovado e opcional;
-- status do probe de acesso da credencial para cada perfil;
+- status, modelo retornado, data e erro redigido do probe da credencial para
+  cada perfil;
 - versão, data, autor e motivo da ativação;
 - configuração anterior para rollback auditável.
 
