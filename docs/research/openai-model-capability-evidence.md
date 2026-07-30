@@ -25,7 +25,8 @@ porque:
 - não houve execução do conjunto de regressão;
 - a documentação afirma capacidade multilíngue genérica, mas não promete
   qualidade, naturalidade ou domínio imobiliário em português brasileiro;
-- não há SLO de latência definido pelo produto nem medição com o contexto real;
+- a documentação da OpenAI não garante SLO para o workload, e ainda não há
+  medição com o contexto real;
 - cumprimento de schema não prova que o valor extraído, a ferramenta escolhida
   ou a mensagem sejam semanticamente corretos.
 
@@ -46,9 +47,10 @@ configurações em tarefas representativas, pois o melhor esforço depende do
 workload. Fontes: [catálogo de modelos][models] e
 [guia do GPT-5.6][latest-model].
 
-Fallback automático fica restrito à fronteira **antes de qualquer efeito de
-domínio ou envio**. Depois de retries limitados, timeout, conexão interrompida,
-rate limit temporário e erro 5xx podem usar o secundário previamente aprovado.
+Fallback automático fica restrito a `prepared` ou `request_started`. A resposta
+completa em `model_buffered` fecha a fronteira, antes mesmo de uma proposta de
+ferramenta. Depois de retries limitados, timeout, conexão interrompida, rate
+limit temporário e erro 5xx podem usar o secundário previamente aprovado.
 Erro de schema, segurança, política, autenticação, permissão, cota, recusa,
 resposta incompleta ou resultado ambíguo depois de um efeito deve pausar ou
 reconciliar, não tentar outro modelo às cegas. Essa decisão combina a
@@ -92,8 +94,6 @@ reasoning_effort
 reasoning_context
 service_tier
 instructions_version
-behavioral_version
-factual_version
 toolset_version
 schema_hash
 parallel_tool_calls
@@ -101,9 +101,13 @@ max_output_tokens
 store
 ```
 
-Qualquer alteração material nesse perfil exige repetir ao menos compatibilidade
-técnica, suíte crítica e regressão relacionada. Troca de modelo exige a
-regressão completa já prevista pelo produto.
+`instructions_version` aqui identifica o template/contrato estável. Persona,
+fatos e instrução compilada pertencem ao fingerprint da execução
+(`behavioral_version`, `factual_version`, `compiled_instructions_hash` e
+`context_hash`), portanto uma publicação factual não invalida por si só o
+perfil. Qualquer alteração material do perfil exige repetir ao menos
+compatibilidade técnica, suíte crítica e regressão relacionada. Troca de
+modelo exige a regressão completa já prevista pelo produto.
 
 ## 3. Candidatos atuais
 
@@ -307,7 +311,7 @@ Sol, Terra e Luna passam pelo mesmo gate. Um modelo mais barato não recebe
 tolerância maior, e Sol não recebe aprovação por reputação. Quando modelos
 empatam no gate funcional, custo e latência medidos decidem.
 
-### 5.3 Performance e custo — limites ainda abertos
+### 5.3 Performance e custo
 
 Registrar por perfil:
 
@@ -320,8 +324,12 @@ Registrar por perfil:
 
 Não há número oficial de latência que garanta o comportamento no workload do
 Pedro. A OpenAI só posiciona Terra/Luna relativamente para custo/volume e
-recomenda comparação representativa. O dono do produto ainda precisa definir o
-SLO máximo e o orçamento antes de promover um perfil.
+recomenda comparação representativa. Como decisão conservadora do spike, o
+gate inicial usa p95 de até 15 segundos, p99 de até 30 segundos e timeout de 30
+segundos por tentativa. O custo p95 por turno aceito deve ser no máximo
+US$ 0,10, e a execução completa da suíte deve custar no máximo US$ 50,00 por
+perfil/configuração. Esses limites precisam ser medidos live; não são promessa
+do provedor.
 
 ## 6. Matriz de retry, fallback e pausa
 
@@ -329,7 +337,7 @@ Fallback só ocorre depois dos retries configurados e somente quando:
 
 1. primário e secundário estão aprovados para o mesmo contrato;
 2. a entrada, versões, schemas, allowlist e `expected_version` são idênticos;
-3. nenhuma ferramenta foi aceita/executada e nenhuma mensagem foi enfileirada;
+3. a fase ainda é `prepared` ou `request_started`, sem resposta completa;
 4. a falha foi classificada como transitória;
 5. a chave `ai-turn:{conversation_id}:{last_inbound_message_id}:{context_version}`
    impede duas decisões concorrentes.
@@ -373,7 +381,7 @@ Pode ser registrado agora:
   custo/latência, e `gpt-5.6-luna` uma hipótese para tarefas auxiliares;
 - perfil completo, não slug isolado, é a unidade de aprovação;
 - fallback é permitido somente para falha transitória classificada, entre
-  perfis aprovados e antes de qualquer efeito;
+  perfis aprovados e antes de `model_buffered`;
 - falha estrutural, semântica ou de segurança pausa;
 - continuidade da Responses API não substitui o banco como estado canônico.
 
@@ -381,10 +389,10 @@ Permanece bloqueado até implementação/teste:
 
 - afirmar compatibilidade dos schemas concretos;
 - aprovar qualquer perfil para produção;
-- escolher definitivamente primário e secundário;
+- escolher definitivamente o primário e, se desejado, o secundário;
 - declarar qualidade em português brasileiro;
 - definir esforço de raciocínio, `max_output_tokens` e política de contexto;
-- definir SLO de latência e orçamento por conversa;
+- validar live os tetos iniciais de latência e custo;
 - liberar chamadas paralelas;
 - afirmar snapshot imutável para GPT-5.6.
 

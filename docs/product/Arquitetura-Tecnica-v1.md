@@ -387,12 +387,17 @@ Painéis mínimos:
    A matriz física de iOS e Android continua como gate antes do piloto.
 5. **Modelos configuráveis:** testar schema de ferramentas e qualidade antes de permitir que um modelo seja publicado.
 
-Fallback automático só pode usar modelos previamente aprovados e o secundário escolhido pelo dono. Timeout, rate limit e indisponibilidade transitória podem acionar fallback depois das tentativas previstas; falha de segurança ou saída estruturalmente inválida pausa a conversa em vez de tentar outro modelo às cegas.
+Fallback automático só pode usar modelos previamente aprovados e um secundário
+opcional escolhido pelo dono. Timeout, rate limit e indisponibilidade
+transitória podem acionar fallback depois das tentativas previstas; sem
+secundário, ou diante de falha de segurança ou saída estruturalmente inválida,
+a conversa pausa em vez de tentar outro modelo às cegas.
 
 A unidade aprovada é um perfil imutável de modelo, parâmetros, instruções,
-schemas e ferramentas. Fallback só cruza de perfil antes de qualquer efeito,
-outbox comprometido ou conteúdo exposto; depois disso, o sistema reconcilia ou
-retoma do resultado persistido. A matriz de candidatos, gates objetivos,
+schemas e ferramentas. Fallback só cruza de perfil enquanto a fase persistida
+for `prepared` ou `request_started`; `model_buffered` fecha a fronteira. Depois
+disso, o sistema pausa, reconcilia ou retoma do resultado persistido. A matriz
+de candidatos, gates objetivos,
 política de dashboard e campos de observabilidade estão no
 [`Contrato de homologação e fallback de modelos OpenAI`](../research/openai-model-homologation-contract.md)
 e na

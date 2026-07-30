@@ -500,7 +500,7 @@ Ação **Atualizar contexto da IA** compila e testa uma versão, em vez de fazer
   produção;
 - produção lista somente perfis homologados para o mesmo contrato;
 - sombra e assistido exibem candidatos com seus gates pendentes;
-- modelo primário e fallback secundário, ambos aprovados;
+- modelo primário aprovado e fallback secundário opcional também aprovado;
 - capacidades, contexto, parâmetros, custo revisado em, p50/p95, última suíte e
   limitações;
 - comparação de resposta, extração, ação, ferramenta, latência e custo;

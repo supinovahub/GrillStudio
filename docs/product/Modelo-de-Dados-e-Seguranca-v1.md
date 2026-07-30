@@ -176,7 +176,7 @@ Aprovar aprendizado não edita instrução em uso. Cria rascunho, roda regressõ
 - provedor e identificador do modelo;
 - endpoint, modelo solicitado e modelo retornado pelo probe;
 - parâmetros permitidos e seus valores efetivos;
-- versões de instructions, schema e toolset;
+- versão do template/contrato de instructions, schema e toolset;
 - hashes canônicos do perfil e do schema;
 - compatibilidade com ferramentas/schema;
 - status:
@@ -186,6 +186,22 @@ Aprovar aprendizado não edita instrução em uso. Cria rascunho, roda regressõ
 - orçamento.
 
 Chaves de API ficam em `private.integration_secrets`, nunca nesta tabela.
+O perfil é global e imutável; acesso por credencial e escolha operacional não
+fazem parte de seu hash.
+
+### `operation_model_assignments`
+
+- organização e operação;
+- conexão BYOK/segredo referenciada, nunca o segredo;
+- perfil primário aprovado;
+- perfil de fallback aprovado e opcional;
+- status do probe de acesso da credencial para cada perfil;
+- versão, data, autor e motivo da ativação;
+- configuração anterior para rollback auditável.
+
+Sem fallback configurado, a operação continua válida, mas pausa a conversa
+quando o primário esgota retries seguros. Trocar conexão, primário ou fallback
+cria nova versão da atribuição e exige confirmação do dono.
 
 ### `experiments`, `experiment_variants`, `experiment_assignments`
 
@@ -325,6 +341,7 @@ Unique por conexão + ID de mensagem do provedor.
 - perfil e hashes efetivamente usados;
 - número da tentativa, retry/fallback e causa;
 - versões comportamental e factual;
+- hash da instrução compilada e do contexto efetivo;
 - ferramentas propostas, aceitas e rejeitadas;
 - fase do turno, `expected_version`, `call_id` e chave de idempotência;
 - efeito externo: `none | started | recorded | unknown`;

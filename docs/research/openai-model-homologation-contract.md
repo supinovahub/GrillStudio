@@ -25,10 +25,11 @@ A ordem de avaliação preserva a decisão de produto existente:
 
 O identificador sozinho não é a unidade homologada. Produção aprova um
 **perfil imutável** com modelo, parâmetros, instruções, schemas e ferramentas
-versionados. Fallback automático só é seguro para falha transitória antes de
-qualquer ferramenta aceita/executada, mensagem persistida no outbox ou trecho
-exposto ao lead. Saída inválida, insegura, recusada ou semanticamente proibida
-pausa a conversa e escala; não troca de modelo às cegas.
+versionados. Fallback automático só é seguro para falha transitória enquanto o
+turno ainda está em `prepared` ou `request_started`; a transição para
+`model_buffered` fecha essa fronteira. Saída inválida, insegura, recusada ou
+semanticamente proibida pausa a conversa e escala; não troca de modelo às
+cegas.
 
 ## 2. Matriz de candidatos
 
@@ -97,17 +98,23 @@ service_tier
 max_output_tokens
 store
 instructions_version
-behavioral_version
-factual_version
 toolset_version
 schema_hash
 parallel_tool_calls
 stream_policy
 ```
 
-Alterar qualquer campo cria um perfil novo. Troca de modelo sempre executa a
-regressão completa. Alteração de instrução, schema ou ferramenta executa
-compatibilidade, suíte crítica e regressão relacionada no mínimo.
+`instructions_version` identifica o template e o contrato estável enviados ao
+modelo, não a persona ou os fatos compilados no turno. O fingerprint de cada
+execução guarda separadamente `profile_hash`, `behavioral_version`,
+`factual_version`, `compiled_instructions_hash` e `context_hash`, conforme o
+ADR 0005. Publicar um fato não cria um perfil de modelo.
+
+Alterar qualquer campo do perfil cria um perfil novo. Troca de modelo sempre
+executa a regressão completa. Alteração de template de instrução, schema ou
+ferramenta executa compatibilidade, suíte crítica e regressão relacionada no
+mínimo. Mudanças comportamentais ou factuais seguem a regressão própria do
+conteúdo e ficam vinculadas à execução.
 
 ### 3.1 Baseline de request
 
@@ -302,14 +309,17 @@ Gate inicial do caminho síncrono, medido até a decisão completa:
 
 O custo passa quando:
 
-- p50/p95 por turno e projeção mensal ficam abaixo do teto numérico aprovado
-  pelo dono;
+- o custo p95 por turno aceito, incluindo decisão e seleção de ferramenta, é
+  menor ou igual a US$ 0,10;
+- uma execução completa de 50 casos × 5 repetições, com os probes técnicos,
+  custa no máximo US$ 50,00 por perfil/configuração;
 - retries e fallback estão incluídos;
 - não há regressão superior a 20% contra o perfil aprovado sem justificativa e
   confirmação do dono.
 
-O produto ainda não definiu o teto financeiro. Por isso, custo continua um
-gate bloqueado, mesmo com a fórmula e os preços atuais conhecidos.
+Esses são tetos técnicos iniciais, calculados com a tabela de preço
+versionada. O dono pode impor um orçamento menor por operação; ultrapassar os
+tetos exige nova decisão registrada, não aprovação implícita pelo dashboard.
 
 ### 5.5 Regressão
 
@@ -341,9 +351,11 @@ prepared
   -> delivered
 ```
 
-Fallback só pode criar nova tentativa antes de `tool_effect_started` e antes
-de qualquer reply exposto/comprometido. A tentativa nova mantém o mesmo
-`turn_id`; a anterior fica `superseded`, nunca apagada.
+Fallback só pode criar nova tentativa em `prepared` ou `request_started`,
+inclusive descartando um stream ainda privado e incompleto. `model_buffered` é
+o cutoff persistido: depois de uma resposta completa, proposta de ferramenta,
+validação de política, efeito ou reply, não há fallback de modelo. A tentativa
+nova mantém o mesmo `turn_id`; a anterior fica `superseded`, nunca apagada.
 
 Chaves mínimas:
 
@@ -413,8 +425,10 @@ deprecated
 ```
 
 - produção lista somente `production_approved`;
-- o dono escolhe primário e secundário entre perfis aprovados para o mesmo
-  contrato;
+- o dono escolhe um primário aprovado e pode escolher um secundário aprovado
+  para o mesmo contrato;
+- a atribuição é versionada por organização/operação e conexão BYOK; o probe
+  confirma acesso de cada credencial sem alterar o perfil global;
 - simulador aceita novo ID em quarentena e nunca produz efeito;
 - sombra aceita candidato após compatibilidade técnica, sem enviar mensagens;
 - assistido exige suíte sintética completa e aprovação humana de cada envio;
@@ -448,7 +462,8 @@ os recursos.
 - configurações anteriores não são sobrescritas;
 - catálogo/depreciações oficiais são monitorados;
 - modelo descontinuado bloqueia novas seleções;
-- uma chamada sem efeito pode usar o secundário já aprovado;
+- uma chamada ainda em `prepared` ou `request_started` pode usar o secundário
+  já aprovado;
 - sem secundário, conversa pausa;
 - dono recebe prazo, impacto, custo e plano de re-homologação.
 
@@ -489,26 +504,27 @@ prefere IDs, hashes, categorias e contagens.
 Executado localmente, sem API key:
 
 - carregamento e validação estrutural de 10 schemas de ferramenta;
-- catálogo de 18 casos sintéticos cobrindo qualificação, FAQ, ambiguidade,
+- catálogo de 50 casos sintéticos cobrindo qualificação, FAQ, ambiguidade,
   agendamento, follow-up, opt-out, escaladas, promessa proibida e injection;
-- 12 transições da política de retry/fallback/pausa;
-- resultado: 18 casos catalogados, 12 de 12 transições corretas e zero chamada
+- cobertura positiva das 10 ferramentas e quatro schemas negativos;
+- 13 transições da política de retry/fallback/pausa;
+- resultado: 50 casos catalogados, 13 de 13 transições corretas e zero chamada
   live;
 - validação de sintaxe Node.js e `git diff --check`.
 
 O protótipo primário está preservado fora da main no commit
-[`93f13c4`](https://github.com/supinovahub/GrillStudio/tree/93f13c4ef0b5db97a06e495aa7136758f2a44c37/prototypes/openai-model-homologation).
+[`d75276c`](https://github.com/supinovahub/GrillStudio/tree/d75276c5e51765d649a4b87f5b90146062ed1c6e/prototypes/openai-model-homologation).
 
 O protótipo não aprovou nenhum modelo. Permanecem gates:
 
 - aceitação real dos schemas e parâmetros;
-- execução de function calling e seleção entre múltiplas ferramentas;
-- continuidade e streaming;
-- 50 casos completos × 5 execuções por perfil;
+- execução live de function calling e seleção entre múltiplas ferramentas;
+- probes live de continuidade manual, streaming e schemas inválidos;
+- 50 casos completos × 5 execuções por perfil no harness;
 - qualidade semântica e `pt-BR`;
 - custo e latência reais;
 - sombra/assistido com revisão humana;
-- teto financeiro aprovado pelo dono.
+- validação live dos tetos técnicos de custo.
 
 ## 10. Resultado da decisão
 
@@ -519,10 +535,9 @@ O ticket resolve o desenho necessário para iniciar a implementação futura:
 - Sol permanece baseline primário; Terra é fallback/desafiante; Luna começa
   auxiliar;
 - nenhum perfil está homologado enquanto os gates live estiverem pendentes;
-- fallback automático é transacional e só ocorre antes de efeitos;
+- fallback automático é transacional e só ocorre antes de `model_buffered`;
 - falha estrutural, segurança, recusa, efeito incerto ou reply parcial pausa;
 - dashboard separa simulador, sombra, assistido e produção;
 - observabilidade permite reproduzir cada tentativa sem expor segredos.
 
 Implementar o orquestrador, persistência ou UI continua fora deste spike.
-

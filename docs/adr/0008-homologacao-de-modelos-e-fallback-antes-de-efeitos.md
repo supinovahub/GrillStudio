@@ -16,11 +16,12 @@ candidato inicial a fallback e desafiante de custo/latência, e
 equivale a homologação; nenhum perfil está aprovado até os testes live.
 
 Fallback automático só pode ocorrer entre perfis aprovados para o mesmo
-contrato, em falha transitória classificada e antes de ferramenta
-aceita/executada, mensagem comprometida no outbox ou conteúdo exposto ao lead.
-Falha estrutural, semântica, de segurança, autenticação, recusa, efeito incerto
-ou resposta parcial pausa ou reconcilia a conversa. Depois de um efeito, a
-retomada continua do resultado persistido e nunca repete o turno inteiro.
+contrato, em falha transitória classificada e enquanto a fase persistida ainda
+for `prepared` ou `request_started`. `model_buffered` é o cutoff: depois da
+resposta completa não há troca automática de modelo. Falha estrutural,
+semântica, de segurança, autenticação, recusa, efeito incerto ou resposta
+parcial pausa ou reconcilia a conversa. Depois de um efeito, a retomada
+continua do resultado persistido e nunca repete o turno inteiro.
 
 Essa decisão aumenta o trabalho de avaliação e versionamento, mas impede
 duplicidade de efeitos, drift silencioso por alias e troca de modelo que
