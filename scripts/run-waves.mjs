@@ -458,7 +458,11 @@ function checksForPr(repoRoot, prNumber) {
     const passed = ["SUCCESS", "NEUTRAL"].includes(terminalState);
     const skipped = terminalState === "SKIPPED";
     const failed =
-      !pending && terminalState && !passed && terminalState !== "PENDING";
+      !pending &&
+      terminalState &&
+      !passed &&
+      !skipped &&
+      terminalState !== "PENDING";
 
     return { name, pending, passed, skipped, failed, terminalState };
   });
