@@ -1921,7 +1921,11 @@ Camadas:
 - relacionada: conteúdo alterado;
 - completa: troca de modelo, persona grande ou execução manual.
 
-Testes são diagnósticos. Apenas incompatibilidade técnica bloqueia; riscos são mostrados ao responsável.
+Para publicação de conteúdo/persona, os testes são diagnósticos e apenas
+incompatibilidade técnica bloqueia; riscos são mostrados ao responsável. Essa
+regra não promove perfil de modelo. Modelo novo só entra em produção depois de
+passar todos os gates vinculantes de compatibilidade, qualidade, segurança,
+estabilidade, latência e custo.
 
 ### 30.6 Experimentos A/B de persona
 
@@ -2336,7 +2340,8 @@ Objetivos de recuperação:
 - avaliação de alternativas aprovadas;
 - perfis de modelo testáveis;
 - fallback apenas entre modelos aprovados;
-- dono escolhe o modelo secundário;
+- dono pode escolher um modelo secundário; sem ele, a conversa pausa quando o
+  primário esgota o retry seguro;
 - timeout, rate limit ou indisponibilidade temporária podem acionar fallback automático após as tentativas previstas;
 - cada resposta registra o modelo realmente usado;
 - falha de segurança ou resposta estruturalmente inválida não aciona fallback às cegas: a conversa pausa;
@@ -2344,6 +2349,13 @@ Objetivos de recuperação:
 - memória canônica no banco;
 - ferramentas validadas pelo backend;
 - modelo nunca recebe acesso direto ao banco.
+
+A homologação aprova o perfil completo de modelo, parâmetros, instructions,
+schemas e ferramentas. Sol permanece candidato inicial, Terra é candidato a
+fallback/desafiante e Luna começa em tarefas auxiliares; capacidade
+documentada não libera nenhum deles para produção. Fallback só ocorre em
+`prepared` ou `request_started`; `model_buffered` fecha a fronteira, conforme o
+[`Contrato de homologação e fallback de modelos OpenAI`](../research/openai-model-homologation-contract.md).
 
 ### 36.4 WhatsApp
 

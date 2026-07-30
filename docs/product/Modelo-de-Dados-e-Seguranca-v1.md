@@ -174,12 +174,35 @@ Aprovar aprendizado não edita instrução em uso. Cria rascunho, roda regressõ
 ### `model_profiles`
 
 - provedor e identificador do modelo;
-- parâmetros permitidos;
+- endpoint e modelo solicitado;
+- parâmetros permitidos e seus valores efetivos;
+- versão do template/contrato de instructions, schema e toolset;
+- hashes canônicos do perfil e do schema;
 - compatibilidade com ferramentas/schema;
-- status de teste/publicação;
+- status:
+  `documented | contract_passed | synthetic_passed | shadow_or_assisted | production_approved | quarantined | deprecated`;
+- ambientes permitidos e data/autor da aprovação;
+- preço observado, fonte e data de revisão;
 - orçamento.
 
 Chaves de API ficam em `private.integration_secrets`, nunca nesta tabela.
+O perfil é global e imutável; acesso por credencial e escolha operacional não
+fazem parte de seu hash.
+
+### `operation_model_assignments`
+
+- organização e operação;
+- conexão BYOK/segredo referenciada, nunca o segredo;
+- perfil primário aprovado;
+- perfil de fallback aprovado e opcional;
+- status, modelo retornado, data e erro redigido do probe da credencial para
+  cada perfil;
+- versão, data, autor e motivo da ativação;
+- configuração anterior para rollback auditável.
+
+Sem fallback configurado, a operação continua válida, mas pausa a conversa
+quando o primário esgota retries seguros. Trocar conexão, primário ou fallback
+cria nova versão da atribuição e exige confirmação do dono.
 
 ### `experiments`, `experiment_variants`, `experiment_assignments`
 
@@ -316,9 +339,13 @@ Unique por conexão + ID de mensagem do provedor.
 
 - conversa e mensagens de entrada/saída;
 - modelo solicitado e modelo realmente usado;
-- fallback;
+- perfil e hashes efetivamente usados;
+- número da tentativa, retry/fallback e causa;
 - versões comportamental e factual;
+- hash da instrução compilada e do contexto efetivo;
 - ferramentas propostas, aceitas e rejeitadas;
+- fase do turno, `expected_version`, `call_id` e chave de idempotência;
+- efeito externo: `none | started | recorded | unknown`;
 - latência, tokens e custo;
 - resultado/erro e trace.
 

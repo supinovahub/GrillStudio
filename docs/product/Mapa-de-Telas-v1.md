@@ -493,12 +493,22 @@ Ação **Atualizar contexto da IA** compila e testa uma versão, em vez de fazer
 
 ### Modelos
 
-- modelos validados;
-- adicionar identificador para simulador;
-- status de compatibilidade;
-- comparação;
+- catálogo por perfil com estados `documented`, `contract_passed`,
+  `synthetic_passed`, `shadow_or_assisted`, `production_approved`,
+  `quarantined` e `deprecated`;
+- adicionar identificador para simulador, sem efeito e sem opção direta de
+  produção;
+- produção lista somente perfis homologados para o mesmo contrato;
+- sombra e assistido exibem candidatos com seus gates pendentes;
+- modelo primário aprovado e fallback secundário opcional também aprovado;
+- capacidades, contexto, parâmetros, custo revisado em, p50/p95, última suíte e
+  limitações;
+- comparação de resposta, extração, ação, ferramenta, latência e custo;
+- alias móvel bloqueado em produção;
+- aviso e plano de troca quando um modelo for descontinuado;
 - orçamento;
-- confirmação exclusiva do dono para produção.
+- confirmação exclusiva do dono para produção;
+- histórico, rollback e auditoria de toda alteração.
 
 ### Experimentos
 
@@ -552,6 +562,7 @@ Timezone, regras, duração/intervalo, lembretes e distribuição.
 
 - chave de API;
 - modelos permitidos;
+- validação server-side com probe sintético, sem reexibir ou logar a chave;
 - limites;
 - botão **Habilitar IA em produção**;
 - modos padrão;

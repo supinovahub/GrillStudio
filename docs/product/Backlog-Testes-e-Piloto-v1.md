@@ -123,6 +123,12 @@ Uma história só está concluída quando:
 
 **Aceite:** modelo não consegue executar ação fora do schema/política; produção começa desligada.
 
+Um perfil novo só entra em produção depois de passar pelo contrato de
+homologação: schemas/ferramentas 100% válidos, pelo menos 50 casos com cinco
+execuções por configuração, 90% em extração e próxima ação, 100% dos críticos,
+avaliação cega em sombra ou assistido e gates de latência/custo. Fallback fica
+restrito a falha transitória em `prepared` ou `request_started`.
+
 ### EPIC 6 — Qualificação e conversa
 
 - oito perguntas iniciais configuráveis;
@@ -528,6 +534,14 @@ Portão:
 - 90% extração;
 - 90% próxima ação;
 - 100% críticos;
+- 100% schema e argumentos de ferramenta válidos;
+- pelo menos 95% ferramenta + argumentos e 98% nos casos sem ferramenta;
+- cinco execuções por caso/configuração e nenhuma regressão crítica;
+- latência p95 de até 15 segundos e p99 de até 30 segundos;
+- custo p95 de até US$ 0,10 por turno e até US$ 50,00 por execução completa
+  da suíte por perfil/configuração;
+- perfil primário completo e, se configurado, fallback homologado para o mesmo
+  contrato;
 - respostas aprovadas mantêm estilo humano definido;
 - nenhuma ferramenta proibida executável.
 
