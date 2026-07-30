@@ -9,17 +9,46 @@ const DEFAULT_CONCURRENCY = 3;
 const POLL_INTERVAL_MS = 20_000;
 const MERGE_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const PREVIEW_TIMEOUT_MS = 15 * 60 * 1_000;
+const SUPABASE_CLI_VERSION = "2.110.0";
+const MAIN_PROJECT_REF = ["vummfrwi", "xxmshsepqqlz"].join("");
+const REQUIRED_CHECKS = [
+  "Agent verified",
+  "quality",
+  "Supabase Preview",
+];
+const SUPABASE_ENVIRONMENT_KEYS = [
+  "ANON_KEY",
+  "API_URL",
+  "DATABASE_URL",
+  "DB_URL",
+  "DIRECT_URL",
+  "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+  "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+  "NEXT_PUBLIC_SUPABASE_URL",
+  "POSTGRES_URL",
+  "POSTGRES_URL_NON_POOLING",
+  "PUBLISHABLE_KEY",
+  "SERVICE_ROLE_KEY",
+  "SUPABASE_ANON_KEY",
+  "SUPABASE_BRANCH_ID",
+  "SUPABASE_BRANCH_NAME",
+  "SUPABASE_PUBLISHABLE_KEY",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_URL",
+];
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
-    env: process.env,
+    env: options.env ?? process.env,
     stdio: options.capture ? "pipe" : "inherit",
   });
 
   if (result.status !== 0) {
-    const detail = [result.stdout, result.stderr].filter(Boolean).join("\n");
+    const detail = options.sensitive
+      ? result.stderr
+      : [result.stdout, result.stderr].filter(Boolean).join("\n");
     throw new Error(
       `${command} ${args.join(" ")} failed with ${result.status}${
         detail ? `\n${detail}` : ""
@@ -28,6 +57,29 @@ function run(command, args, options = {}) {
   }
 
   return result.stdout?.trim() ?? "";
+}
+
+function withoutSupabaseCredentials(environment = process.env) {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      ([key]) =>
+        !SUPABASE_ENVIRONMENT_KEYS.includes(key) &&
+        !key.startsWith("SUPABASE_") &&
+        !key.startsWith("POSTGRES_") &&
+        !["PGDATABASE", "PGHOST", "PGPASSWORD", "PGPORT", "PGUSER"].includes(
+          key,
+        ),
+    ),
+  );
+}
+
+function environmentWithNode(environment = process.env) {
+  const nodeDirectory = path.dirname(process.execPath);
+  const currentPath = environment.PATH ?? "";
+  return {
+    ...environment,
+    PATH: [nodeDirectory, currentPath].filter(Boolean).join(path.delimiter),
+  };
 }
 
 function ghJson(args, cwd) {
@@ -49,6 +101,38 @@ function hasLabel(issue, label) {
   return issue.labels.some((candidate) => candidate.name === label);
 }
 
+function nativeOpenBlockers(repoRoot, issues) {
+  if (issues.length === 0) {
+    return new Map();
+  }
+
+  const selections = issues
+    .map(
+      (issue) =>
+        `issue${issue.number}: issue(number: ${issue.number}) { blockedBy(first: 100) { nodes { number state } } }`,
+    )
+    .join("\n");
+  const result = ghJson(
+    [
+      "api",
+      "graphql",
+      "-f",
+      `query={ repository(owner: "supinovahub", name: "GrillStudio") { ${selections} } }`,
+    ],
+    repoRoot,
+  );
+  const repository = result.data.repository;
+
+  return new Map(
+    issues.map((issue) => [
+      issue.number,
+      repository[`issue${issue.number}`].blockedBy.nodes
+        .filter((blocker) => blocker.state === "OPEN")
+        .map((blocker) => blocker.number),
+    ]),
+  );
+}
+
 function getFrontier(repoRoot) {
   const openIssues = ghJson(
     [
@@ -66,16 +150,69 @@ function getFrontier(repoRoot) {
     repoRoot,
   );
   const openNumbers = new Set(openIssues.map((issue) => issue.number));
+  const tickets = openIssues.filter((issue) => /^T\d+\s+—/.test(issue.title));
+  const nativeBlockers = nativeOpenBlockers(repoRoot, tickets);
 
-  return openIssues
-    .filter((issue) => /^T\d+\s+—/.test(issue.title))
+  return tickets
     .filter((issue) => hasLabel(issue, "ready-for-agent"))
     .filter((issue) => !hasLabel(issue, "ready-for-human"))
     .filter((issue) => issue.assignees.length === 0)
     .filter((issue) =>
       parseBlockers(issue.body).every((blocker) => !openNumbers.has(blocker)),
     )
+    .filter((issue) => nativeBlockers.get(issue.number).length === 0)
     .sort((left, right) => left.number - right.number);
+}
+
+function assertTicketMergeable(repoRoot, issueNumber) {
+  const issue = ghJson(
+    [
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      REPOSITORY,
+      "--json",
+      "state,body,labels",
+    ],
+    repoRoot,
+  );
+  const openIssueNumbers = new Set(
+    ghJson(
+      [
+        "issue",
+        "list",
+        "--repo",
+        REPOSITORY,
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number",
+      ],
+      repoRoot,
+    ).map((candidate) => candidate.number),
+  );
+  const nativeBlockers =
+    nativeOpenBlockers(repoRoot, [{ number: issueNumber }]).get(issueNumber) ??
+    [];
+
+  if (issue.state !== "OPEN") {
+    throw new Error(`Issue #${issueNumber} is no longer open`);
+  }
+  if (!hasLabel(issue, "ready-for-agent")) {
+    throw new Error(`Issue #${issueNumber} lost ready-for-agent`);
+  }
+  if (hasLabel(issue, "ready-for-human")) {
+    throw new Error(`Issue #${issueNumber} now requires a human`);
+  }
+  if (
+    parseBlockers(issue.body).some((blocker) => openIssueNumbers.has(blocker)) ||
+    nativeBlockers.length > 0
+  ) {
+    throw new Error(`Issue #${issueNumber} has an open blocker`);
+  }
 }
 
 function slugFor(issue) {
@@ -87,7 +224,150 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runCodex(worktree, issue, model) {
+function parseEnvironment(output) {
+  const environment = {};
+
+  for (const line of output.split("\n")) {
+    const match = line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const [, key, rawValue] = match;
+    let value = rawValue;
+    if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
+      value = JSON.parse(rawValue);
+    } else if (rawValue.startsWith("'") && rawValue.endsWith("'")) {
+      value = rawValue.slice(1, -1);
+    }
+    environment[key] = value;
+  }
+
+  return environment;
+}
+
+function resolvePreviewEnvironment(worktree, branch) {
+  const cleanEnvironment = environmentWithNode(withoutSupabaseCredentials());
+  const output = run(
+    "pnpm",
+    [
+      "dlx",
+      `supabase@${SUPABASE_CLI_VERSION}`,
+      "branches",
+      "get",
+      branch,
+      "--project-ref",
+      MAIN_PROJECT_REF,
+      "--output",
+      "env",
+    ],
+    {
+      cwd: worktree,
+      capture: true,
+      env: cleanEnvironment,
+      sensitive: true,
+    },
+  );
+  const branchEnvironment = parseEnvironment(output);
+  const supabaseUrl =
+    branchEnvironment.SUPABASE_URL ?? branchEnvironment.API_URL;
+  const publicKey =
+    branchEnvironment.SUPABASE_PUBLISHABLE_KEY ??
+    branchEnvironment.PUBLISHABLE_KEY ??
+    branchEnvironment.SUPABASE_ANON_KEY ??
+    branchEnvironment.ANON_KEY;
+  const serviceRoleKey =
+    branchEnvironment.SUPABASE_SERVICE_ROLE_KEY ??
+    branchEnvironment.SERVICE_ROLE_KEY;
+  const databaseUrl =
+    branchEnvironment.POSTGRES_URL_NON_POOLING ??
+    branchEnvironment.POSTGRES_URL;
+
+  if (!supabaseUrl || !publicKey || !serviceRoleKey || !databaseUrl) {
+    throw new Error(
+      `Preview Branch ${branch} did not return the required credentials`,
+    );
+  }
+  if (supabaseUrl.includes(MAIN_PROJECT_REF)) {
+    throw new Error(`Preview Branch ${branch} resolved to the main project`);
+  }
+
+  return {
+    ...cleanEnvironment,
+    ...branchEnvironment,
+    DATABASE_URL: databaseUrl,
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: publicKey,
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: publicKey,
+    NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
+    SUPABASE_ANON_KEY: publicKey,
+    SUPABASE_BRANCH_NAME: branch,
+    SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+    SUPABASE_URL: supabaseUrl,
+  };
+}
+
+function packageHasScript(worktree, script, environment) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const p=require('./package.json'); process.exit(p.scripts?.[${JSON.stringify(
+        script,
+      )}] ? 0 : 1)`,
+    ],
+    { cwd: worktree, env: environment, stdio: "ignore" },
+  );
+  return result.status === 0;
+}
+
+function verifyImplementation(worktree, environment) {
+  run(process.execPath, ["scripts/validate-cloud-boundary.mjs"], {
+    cwd: worktree,
+    env: environment,
+  });
+  run("git", ["diff", "--check", "origin/main...HEAD"], {
+    cwd: worktree,
+    env: environment,
+  });
+
+  if (!existsSync(path.join(worktree, "package.json"))) {
+    return;
+  }
+  if (!existsSync(path.join(worktree, "pnpm-lock.yaml"))) {
+    throw new Error("package.json exists without pnpm-lock.yaml");
+  }
+
+  run("pnpm", ["install", "--frozen-lockfile"], {
+    cwd: worktree,
+    env: environment,
+  });
+  for (const script of ["lint", "typecheck", "test", "build"]) {
+    if (packageHasScript(worktree, script, environment)) {
+      run("pnpm", [script], { cwd: worktree, env: environment });
+    }
+  }
+}
+
+function setAgentStatus(repoRoot, sha, state, description) {
+  run(
+    "gh",
+    [
+      "api",
+      `repos/${REPOSITORY}/statuses/${sha}`,
+      "--method",
+      "POST",
+      "-f",
+      `state=${state}`,
+      "-f",
+      "context=Agent verified",
+      "-f",
+      `description=${description}`,
+    ],
+    { cwd: repoRoot },
+  );
+}
+
+async function runCodex(worktree, issue, model, previewEnvironment) {
   const prompt = [
     `Use /implement ${issue.url}.`,
     "Work only on this ticket and follow AGENTS.md, CONTEXT.md and the accepted ADRs.",
@@ -110,13 +390,15 @@ async function runCodex(worktree, issue, model) {
       "workspace-write",
       "--config",
       'approval_policy="never"',
+      "--config",
+      "sandbox_workspace_write.network_access=true",
       "--cd",
       worktree,
       prompt,
     ],
     {
       cwd: worktree,
-      env: process.env,
+      env: previewEnvironment,
       stdio: "inherit",
     },
   );
@@ -213,7 +495,69 @@ async function waitForSupabasePreview(repoRoot, prNumber) {
   );
 }
 
-async function waitForMerge({ repoRoot, worktree, branch, prNumber }) {
+async function waitForRequiredChecks(repoRoot, prNumber) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < MERGE_TIMEOUT_MS) {
+    const checks = checksForPr(repoRoot, prNumber);
+    const required = REQUIRED_CHECKS.map((name) => ({
+      name,
+      check: checks.find((candidate) => candidate.name === name),
+    }));
+    const failed = required.filter(
+      ({ check }) => check?.failed || check?.skipped,
+    );
+
+    if (failed.length > 0) {
+      throw new Error(
+        `PR #${prNumber} failed required checks: ${failed
+          .map(({ name }) => name)
+          .join(", ")}`,
+      );
+    }
+    if (required.every(({ check }) => check?.passed)) {
+      return;
+    }
+
+    await wait(POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`Required checks did not pass for PR #${prNumber}`);
+}
+
+async function verifyCurrentHead({
+  repoRoot,
+  worktree,
+  branch,
+  prNumber,
+  issueNumber,
+}) {
+  const sha = run("git", ["rev-parse", "HEAD"], {
+    cwd: worktree,
+    capture: true,
+  });
+  const previewEnvironment = resolvePreviewEnvironment(worktree, branch);
+  setAgentStatus(repoRoot, sha, "pending", "Validating against Preview Branch");
+
+  try {
+    verifyImplementation(worktree, previewEnvironment);
+  } catch (error) {
+    setAgentStatus(repoRoot, sha, "failure", "Automated verification failed");
+    throw error;
+  }
+
+  setAgentStatus(repoRoot, sha, "success", "Preview Branch verification passed");
+  await waitForRequiredChecks(repoRoot, prNumber);
+  assertTicketMergeable(repoRoot, issueNumber);
+}
+
+async function waitForMerge({
+  repoRoot,
+  worktree,
+  branch,
+  prNumber,
+  issueNumber,
+}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < MERGE_TIMEOUT_MS) {
@@ -252,6 +596,13 @@ async function waitForMerge({ repoRoot, worktree, branch, prNumber }) {
       run("git", ["fetch", "origin"], { cwd: worktree });
       run("git", ["merge", "--no-edit", "origin/main"], { cwd: worktree });
       run("git", ["push", "origin", branch], { cwd: worktree });
+      await verifyCurrentHead({
+        repoRoot,
+        worktree,
+        branch,
+        prNumber,
+        issueNumber,
+      });
     }
 
     await wait(POLL_INTERVAL_MS);
@@ -260,118 +611,229 @@ async function waitForMerge({ repoRoot, worktree, branch, prNumber }) {
   throw new Error(`Timed out waiting for PR #${prNumber} to merge`);
 }
 
+function cleanupFailedTicket({
+  repoRoot,
+  worktree,
+  branch,
+  issueNumber,
+  prNumber,
+  worktreeCreated,
+  issueAssigned,
+}) {
+  if (prNumber) {
+    try {
+      run(
+        "gh",
+        [
+          "pr",
+          "close",
+          String(prNumber),
+          "--repo",
+          REPOSITORY,
+          "--comment",
+          "Automação pausada com falha fechada. A Preview Branch foi encerrada; consulte os logs locais antes de retomar.",
+        ],
+        { cwd: repoRoot },
+      );
+    } catch (error) {
+      console.error(`Could not close PR #${prNumber}: ${error.message}`);
+    }
+  }
+
+  if (issueAssigned) {
+    try {
+      run(
+        "gh",
+        [
+          "issue",
+          "edit",
+          String(issueNumber),
+          "--repo",
+          REPOSITORY,
+          "--remove-assignee",
+          "@me",
+        ],
+        { cwd: repoRoot },
+      );
+    } catch (error) {
+      console.error(`Could not unassign issue #${issueNumber}: ${error.message}`);
+    }
+  }
+
+  if (!worktreeCreated) {
+    return;
+  }
+
+  try {
+    const status = run("git", ["status", "--porcelain"], {
+      cwd: worktree,
+      capture: true,
+    });
+    const commitCount = Number(
+      run("git", ["rev-list", "--count", "origin/main..HEAD"], {
+        cwd: worktree,
+        capture: true,
+      }),
+    );
+
+    if (!status && commitCount <= 1) {
+      run("git", ["worktree", "remove", worktree], { cwd: repoRoot });
+      run("git", ["push", "origin", "--delete", branch], { cwd: repoRoot });
+      run("git", ["branch", "--delete", "--force", branch], { cwd: repoRoot });
+    } else {
+      console.error(`Failure worktree preserved for recovery: ${worktree}`);
+    }
+  } catch (error) {
+    console.error(`Could not reconcile failed worktree: ${error.message}`);
+  }
+}
+
 async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
   const slug = slugFor(issue);
   const branch = `agent/${slug}`;
   const worktree = path.join(worktreeRoot, `issue-${issue.number}`);
+  let worktreeCreated = false;
+  let issueAssigned = false;
+  let prNumber;
 
   if (existsSync(worktree)) {
     throw new Error(`Worktree path already exists: ${worktree}`);
   }
 
-  run("git", ["fetch", "--prune", "origin"], { cwd: repoRoot });
-  run(
-    "git",
-    ["worktree", "add", "-b", branch, worktree, "origin/main"],
-    { cwd: repoRoot },
-  );
-  run(
-    "git",
-    ["commit", "--allow-empty", "-m", `Start #${issue.number}`],
-    { cwd: worktree },
-  );
-  run("git", ["push", "--set-upstream", "origin", branch], {
-    cwd: worktree,
-  });
-  run(
-    "gh",
-    [
-      "issue",
-      "edit",
-      String(issue.number),
-      "--repo",
-      REPOSITORY,
-      "--add-assignee",
-      "@me",
-    ],
-    { cwd: repoRoot },
-  );
-  run(
-    "gh",
-    [
-      "pr",
-      "create",
-      "--repo",
-      REPOSITORY,
-      "--draft",
-      "--base",
-      "main",
-      "--head",
-      branch,
-      "--title",
-      issue.title,
-      "--body",
-      `Closes #${issue.number}\n\nImplementação automática da onda.`,
-    ],
-    { cwd: worktree, capture: true },
-  );
-
-  const initialPr = currentPr(repoRoot, branch);
-  await waitForSupabasePreview(repoRoot, initialPr.number);
-  await runCodex(worktree, issue, model);
-
-  const status = run("git", ["status", "--porcelain"], {
-    cwd: worktree,
-    capture: true,
-  });
-  if (status) {
-    throw new Error(
-      `Agent left uncommitted changes for #${issue.number}:\n${status}`,
+  try {
+    assertTicketMergeable(repoRoot, issue.number);
+    run("git", ["fetch", "--prune", "origin"], { cwd: repoRoot });
+    run(
+      "git",
+      ["worktree", "add", "-b", branch, worktree, "origin/main"],
+      { cwd: repoRoot },
     );
-  }
+    worktreeCreated = true;
+    run(
+      "git",
+      ["commit", "--allow-empty", "-m", `Start #${issue.number}`],
+      { cwd: worktree },
+    );
+    run("git", ["push", "--set-upstream", "origin", branch], {
+      cwd: worktree,
+    });
+    run(
+      "gh",
+      [
+        "issue",
+        "edit",
+        String(issue.number),
+        "--repo",
+        REPOSITORY,
+        "--add-assignee",
+        "@me",
+      ],
+      { cwd: repoRoot },
+    );
+    issueAssigned = true;
+    run(
+      "gh",
+      [
+        "pr",
+        "create",
+        "--repo",
+        REPOSITORY,
+        "--draft",
+        "--base",
+        "main",
+        "--head",
+        branch,
+        "--title",
+        issue.title,
+        "--body",
+        `Closes #${issue.number}\n\nImplementação automática da onda.`,
+      ],
+      { cwd: worktree, capture: true },
+    );
 
-  const commitCount = Number(
-    run("git", ["rev-list", "--count", "origin/main..HEAD"], {
+    const initialPr = currentPr(repoRoot, branch);
+    prNumber = initialPr.number;
+    await waitForSupabasePreview(repoRoot, prNumber);
+    const previewEnvironment = resolvePreviewEnvironment(worktree, branch);
+    await runCodex(worktree, issue, model, previewEnvironment);
+
+    const status = run("git", ["status", "--porcelain"], {
       cwd: worktree,
       capture: true,
-    }),
-  );
-  if (commitCount < 2) {
-    throw new Error(`Agent produced no implementation commit for #${issue.number}`);
+    });
+    if (status) {
+      throw new Error(
+        `Agent left uncommitted changes for #${issue.number}:\n${status}`,
+      );
+    }
+
+    const commitCount = Number(
+      run("git", ["rev-list", "--count", "origin/main..HEAD"], {
+        cwd: worktree,
+        capture: true,
+      }),
+    );
+    if (commitCount < 2) {
+      throw new Error(
+        `Agent produced no implementation commit for #${issue.number}`,
+      );
+    }
+
+    run("git", ["fetch", "origin"], { cwd: worktree });
+    run("git", ["merge", "--no-edit", "origin/main"], { cwd: worktree });
+    run("git", ["push", "origin", branch], { cwd: worktree });
+
+    await verifyCurrentHead({
+      repoRoot,
+      worktree,
+      branch,
+      prNumber,
+      issueNumber: issue.number,
+    });
+    run(
+      "gh",
+      ["pr", "ready", String(prNumber), "--repo", REPOSITORY],
+      { cwd: repoRoot },
+    );
+    assertTicketMergeable(repoRoot, issue.number);
+    run(
+      "gh",
+      [
+        "pr",
+        "merge",
+        String(prNumber),
+        "--repo",
+        REPOSITORY,
+        "--auto",
+        "--squash",
+        "--delete-branch",
+      ],
+      { cwd: repoRoot },
+    );
+
+    await waitForMerge({
+      repoRoot,
+      worktree,
+      branch,
+      prNumber,
+      issueNumber: issue.number,
+    });
+
+    run("git", ["worktree", "remove", worktree], { cwd: repoRoot });
+    worktreeCreated = false;
+    run("git", ["branch", "--delete", "--force", branch], { cwd: repoRoot });
+  } catch (error) {
+    cleanupFailedTicket({
+      repoRoot,
+      worktree,
+      branch,
+      issueNumber: issue.number,
+      prNumber,
+      worktreeCreated,
+      issueAssigned,
+    });
+    throw error;
   }
-
-  run("git", ["push", "origin", branch], { cwd: worktree });
-
-  const pr = currentPr(repoRoot, branch);
-  run(
-    "gh",
-    ["pr", "ready", String(pr.number), "--repo", REPOSITORY],
-    { cwd: repoRoot },
-  );
-  run(
-    "gh",
-    [
-      "pr",
-      "merge",
-      String(pr.number),
-      "--repo",
-      REPOSITORY,
-      "--auto",
-      "--squash",
-      "--delete-branch",
-    ],
-    { cwd: repoRoot },
-  );
-
-  await waitForMerge({
-    repoRoot,
-    worktree,
-    branch,
-    prNumber: pr.number,
-  });
-
-  run("git", ["worktree", "remove", worktree], { cwd: repoRoot });
-  run("git", ["branch", "--delete", "--force", branch], { cwd: repoRoot });
 }
 
 function parseArguments(argv) {

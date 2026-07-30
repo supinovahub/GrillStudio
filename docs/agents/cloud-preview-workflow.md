@@ -17,9 +17,11 @@
 5. Resolver as credenciais da Preview Branch correspondente e gravá-las somente no ambiente efêmero do worktree/CI.
 6. Executar `/implement <issue-url>`, TDD nos seams aprovados e `/code-review origin/main`.
 7. Rodar lint, typecheck, testes, build, migrations, RLS e seams aplicáveis.
-8. Enviar commits, atualizar a branch com `main` quando necessário e marcar o PR como pronto.
-9. Solicitar squash auto-merge. GitHub só conclui após todos os checks obrigatórios.
-10. Fechar o ticket pelo PR, apagar branch/worktree e recalcular a fronteira da DAG.
+8. Publicar no SHA verificado o status `Agent verified`, que representa a execução local contra a Preview Branch; CI nunca recebe credenciais do projeto principal.
+9. Enviar commits, atualizar a branch com `main` quando necessário e marcar o PR como pronto.
+10. Revalidar ticket, dependências nativas, labels e checks `quality`, `Supabase Preview` e `Agent verified`.
+11. Solicitar squash auto-merge. GitHub só conclui após todos os checks obrigatórios.
+12. Fechar o ticket pelo PR, apagar branch/worktree e recalcular a fronteira da DAG.
 
 ## Falha fechada
 
