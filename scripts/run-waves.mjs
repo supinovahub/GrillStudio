@@ -11,11 +11,7 @@ const MERGE_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const PREVIEW_TIMEOUT_MS = 15 * 60 * 1_000;
 const SUPABASE_CLI_VERSION = "2.110.0";
 const MAIN_PROJECT_REF = ["vummfrwi", "xxmshsepqqlz"].join("");
-const REQUIRED_CHECKS = [
-  "Agent verified",
-  "quality",
-  "Supabase Preview",
-];
+const REQUIRED_CHECKS = ["Agent verified", "quality", "Supabase Preview"];
 const SUPABASE_ENVIRONMENT_KEYS = [
   "ANON_KEY",
   "API_URL",
@@ -92,9 +88,7 @@ function parseBlockers(body) {
     return [];
   }
 
-  return [...section[1].matchAll(/#(\d+)/g)].map((match) =>
-    Number(match[1]),
-  );
+  return [...section[1].matchAll(/#(\d+)/g)].map((match) => Number(match[1]));
 }
 
 function hasLabel(issue, label) {
@@ -208,7 +202,9 @@ function assertTicketMergeable(repoRoot, issueNumber) {
     throw new Error(`Issue #${issueNumber} now requires a human`);
   }
   if (
-    parseBlockers(issue.body).some((blocker) => openIssueNumbers.has(blocker)) ||
+    parseBlockers(issue.body).some((blocker) =>
+      openIssueNumbers.has(blocker),
+    ) ||
     nativeBlockers.length > 0
   ) {
     throw new Error(`Issue #${issueNumber} has an open blocker`);
@@ -247,6 +243,7 @@ function parseEnvironment(output) {
 }
 
 function resolvePreviewEnvironment(worktree, branch) {
+  const managementEnvironment = environmentWithNode(process.env);
   const cleanEnvironment = environmentWithNode(withoutSupabaseCredentials());
   const output = run(
     "pnpm",
@@ -264,7 +261,7 @@ function resolvePreviewEnvironment(worktree, branch) {
     {
       cwd: worktree,
       capture: true,
-      env: cleanEnvironment,
+      env: managementEnvironment,
       sensitive: true,
     },
   );
@@ -532,6 +529,7 @@ async function verifyCurrentHead({
   prNumber,
   issueNumber,
 }) {
+  await waitForSupabasePreview(repoRoot, prNumber);
   const sha = run("git", ["rev-parse", "HEAD"], {
     cwd: worktree,
     capture: true,
@@ -546,7 +544,12 @@ async function verifyCurrentHead({
     throw error;
   }
 
-  setAgentStatus(repoRoot, sha, "success", "Preview Branch verification passed");
+  setAgentStatus(
+    repoRoot,
+    sha,
+    "success",
+    "Preview Branch verification passed",
+  );
   await waitForRequiredChecks(repoRoot, prNumber);
   assertTicketMergeable(repoRoot, issueNumber);
 }
@@ -656,7 +659,9 @@ function cleanupFailedTicket({
         { cwd: repoRoot },
       );
     } catch (error) {
-      console.error(`Could not unassign issue #${issueNumber}: ${error.message}`);
+      console.error(
+        `Could not unassign issue #${issueNumber}: ${error.message}`,
+      );
     }
   }
 
@@ -665,21 +670,61 @@ function cleanupFailedTicket({
   }
 
   try {
-    const status = run("git", ["status", "--porcelain"], {
+    let status = run("git", ["status", "--porcelain"], {
       cwd: worktree,
       capture: true,
     });
-    const commitCount = Number(
+    let commitCount = Number(
       run("git", ["rev-list", "--count", "origin/main..HEAD"], {
         cwd: worktree,
         capture: true,
       }),
     );
 
-    if (!status && commitCount <= 1) {
+    let recoveryBundle;
+    if (status || commitCount > 1) {
+      if (status) {
+        run("git", ["add", "-A"], { cwd: worktree });
+        run(
+          "git",
+          [
+            "commit",
+            "--no-verify",
+            "-m",
+            `Preserve failed automation #${issueNumber}`,
+          ],
+          { cwd: worktree },
+        );
+        status = "";
+        commitCount += 1;
+      }
+
+      const failureDirectory = path.join(repoRoot, ".orchestrator", "failures");
+      mkdirSync(failureDirectory, { recursive: true });
+      recoveryBundle = path.join(
+        failureDirectory,
+        `issue-${issueNumber}-${Date.now()}.bundle`,
+      );
+      run("git", ["bundle", "create", recoveryBundle, branch], {
+        cwd: repoRoot,
+      });
+      run("git", ["bundle", "verify", recoveryBundle], { cwd: repoRoot });
+    }
+
+    if (!status) {
       run("git", ["worktree", "remove", worktree], { cwd: repoRoot });
-      run("git", ["push", "origin", "--delete", branch], { cwd: repoRoot });
+      const remoteBranch = run(
+        "git",
+        ["ls-remote", "--heads", "origin", branch],
+        { cwd: repoRoot, capture: true },
+      );
+      if (remoteBranch) {
+        run("git", ["push", "origin", "--delete", branch], { cwd: repoRoot });
+      }
       run("git", ["branch", "--delete", "--force", branch], { cwd: repoRoot });
+      if (recoveryBundle) {
+        console.error(`Failure preserved in bundle: ${recoveryBundle}`);
+      }
     } else {
       console.error(`Failure worktree preserved for recovery: ${worktree}`);
     }
@@ -703,17 +748,13 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
   try {
     assertTicketMergeable(repoRoot, issue.number);
     run("git", ["fetch", "--prune", "origin"], { cwd: repoRoot });
-    run(
-      "git",
-      ["worktree", "add", "-b", branch, worktree, "origin/main"],
-      { cwd: repoRoot },
-    );
+    run("git", ["worktree", "add", "-b", branch, worktree, "origin/main"], {
+      cwd: repoRoot,
+    });
     worktreeCreated = true;
-    run(
-      "git",
-      ["commit", "--allow-empty", "-m", `Start #${issue.number}`],
-      { cwd: worktree },
-    );
+    run("git", ["commit", "--allow-empty", "-m", `Start #${issue.number}`], {
+      cwd: worktree,
+    });
     run("git", ["push", "--set-upstream", "origin", branch], {
       cwd: worktree,
     });
@@ -790,11 +831,9 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
       prNumber,
       issueNumber: issue.number,
     });
-    run(
-      "gh",
-      ["pr", "ready", String(prNumber), "--repo", REPOSITORY],
-      { cwd: repoRoot },
-    );
+    run("gh", ["pr", "ready", String(prNumber), "--repo", REPOSITORY], {
+      cwd: repoRoot,
+    });
     assertTicketMergeable(repoRoot, issue.number);
     run(
       "gh",

@@ -18,7 +18,7 @@ O projeto principal `GrillStudio` começa sem Contatos reais, com destinatários
 - A branch Git e a Preview Branch têm o mesmo ciclo de vida. A Preview Branch é criada assim que o draft PR existe e é removida quando o PR é mergeado ou fechado.
 - Desenvolvimento e testes executados a partir de um worktree usam exclusivamente URL, chave pública e credenciais de banco da Preview Branch daquele PR.
 - Credenciais de Preview Branch nunca são versionadas, copiadas entre PRs ou reutilizadas no projeto principal.
-- CI não recebe credenciais do projeto principal. Testes que exigem Supabase aguardam a Preview Branch ficar saudável e usam somente a branch correspondente ao SHA do PR.
+- CI não recebe credenciais do projeto principal. O check GitHub Actions `quality` permanece sem credenciais e executa verificações estáticas e unitárias. O check `Agent verified` aguarda a Preview Branch do SHA ficar saudável, resolve suas credenciais efêmeras e executa a suíte completa que exige Supabase.
 - `supabase/seed.sql` e demais fixtures contêm apenas dados sintéticos, determinísticos e seguros. Nenhum dado do projeto principal é copiado para uma Preview Branch.
 - Provedores externos permanecem simulados ou restritos a ativos e destinatários de teste. Uma Preview Branch não autoriza egressos reais.
 - Migrations são validadas na Preview Branch. O check oficial do Supabase e os checks do repositório são obrigatórios antes do merge.
