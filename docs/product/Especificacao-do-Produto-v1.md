@@ -2345,6 +2345,13 @@ Objetivos de recuperação:
 - ferramentas validadas pelo backend;
 - modelo nunca recebe acesso direto ao banco.
 
+A homologação aprova o perfil completo de modelo, parâmetros, instructions,
+schemas e ferramentas. Sol permanece candidato inicial, Terra é candidato a
+fallback/desafiante e Luna começa em tarefas auxiliares; capacidade
+documentada não libera nenhum deles para produção. Fallback só ocorre antes de
+efeitos ou reply exposto, conforme o
+[`Contrato de homologação e fallback de modelos OpenAI`](../research/openai-model-homologation-contract.md).
+
 ### 36.4 WhatsApp
 
 - Uazapi não oficial disponível no MVP;

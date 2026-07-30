@@ -119,6 +119,12 @@ O modelo não recebe acesso direto ao banco. O ciclo é:
 7. persistir decisão, mensagem, versão do contexto e uso;
 8. enviar ou apenas sugerir, conforme o modo.
 
+O primeiro piloto usa Responses API com `store: false`, instruções compiladas
+reenviadas em todo turno, schemas e funções explicitamente estritos e
+`parallel_tool_calls: false`. Streaming pode alimentar telemetria e simulador,
+mas nenhum delta é enviado ao lead ou executado antes de a resposta completa
+passar por validação de schema, política e estado.
+
 Ferramentas iniciais:
 
 - `record_qualification_patch`
@@ -382,6 +388,15 @@ Painéis mínimos:
 5. **Modelos configuráveis:** testar schema de ferramentas e qualidade antes de permitir que um modelo seja publicado.
 
 Fallback automático só pode usar modelos previamente aprovados e o secundário escolhido pelo dono. Timeout, rate limit e indisponibilidade transitória podem acionar fallback depois das tentativas previstas; falha de segurança ou saída estruturalmente inválida pausa a conversa em vez de tentar outro modelo às cegas.
+
+A unidade aprovada é um perfil imutável de modelo, parâmetros, instruções,
+schemas e ferramentas. Fallback só cruza de perfil antes de qualquer efeito,
+outbox comprometido ou conteúdo exposto; depois disso, o sistema reconcilia ou
+retoma do resultado persistido. A matriz de candidatos, gates objetivos,
+política de dashboard e campos de observabilidade estão no
+[`Contrato de homologação e fallback de modelos OpenAI`](../research/openai-model-homologation-contract.md)
+e na
+[`decisão de homologação por perfil`](../adr/0008-homologacao-de-modelos-e-fallback-antes-de-efeitos.md).
 
 ## 10. Referências técnicas
 
