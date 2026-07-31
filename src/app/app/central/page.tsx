@@ -15,7 +15,7 @@ type PageSearchParams = Promise<{
   sessao?: string;
 }>;
 
-function roleLabel(role: "owner" | "manager" | "broker") {
+function roleLabel(role: string) {
   return role === "owner" ? "Dono" : role === "manager" ? "Gestor" : "Corretor";
 }
 

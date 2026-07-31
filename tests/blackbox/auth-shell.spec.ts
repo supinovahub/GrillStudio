@@ -11,6 +11,7 @@ const suffix = randomUUID().slice(0, 8);
 const ownerEmail = `owner-${suffix}@example.com`;
 const brokerEmail = `broker-${suffix}@example.com`;
 const managerEmail = `manager-${suffix}@example.com`;
+const rlsManagerEmail = `rls-manager-${suffix}@example.com`;
 const outsiderEmail = `outsider-${suffix}@example.com`;
 const pendingEmail = `pending-${suffix}@example.com`;
 
@@ -19,6 +20,7 @@ let database: Sql;
 let ownerId = "";
 let brokerId = "";
 let managerId = "";
+let rlsManagerId = "";
 let outsiderId = "";
 let pendingId = "";
 let ownerOrganizationId = "";
@@ -143,28 +145,47 @@ test.beforeAll(async () => {
     });
   }
 
-  const { data: ownerLink, error: ownerError } =
+  ownerId = await createMembershipFixture({
+    email: ownerEmail,
+    operationId: ownerOperationId,
+    organizationId: ownerOrganizationId,
+    role: "owner",
+    status: "active",
+  });
+  const ownerMembership = await admin
+    .from("memberships")
+    .select("id")
+    .eq("user_id", ownerId)
+    .single();
+  if (ownerMembership.error) {
+    throw new Error(
+      `Could not read synthetic owner membership: ${ownerMembership.error.code}`,
+    );
+  }
+  ownerMembershipId = ownerMembership.data.id;
+
+  const { data: managerLink, error: managerError } =
     await admin.auth.admin.generateLink({
-      email: ownerEmail,
+      email: managerEmail,
       password: ownerPassword,
       type: "signup",
     });
-  if (ownerError) {
-    throw new Error(`Could not create confirmation link: ${ownerError.code}`);
+  if (managerError) {
+    throw new Error(`Could not create confirmation link: ${managerError.code}`);
   }
 
-  ownerId = ownerLink.user.id;
-  confirmationTokenHash = ownerLink.properties.hashed_token;
-  ownerMembershipId = randomUUID();
+  managerId = managerLink.user.id;
+  confirmationTokenHash = managerLink.properties.hashed_token;
+  const managerMembershipId = randomUUID();
   await insertFixture("memberships", {
-    id: ownerMembershipId,
+    id: managerMembershipId,
     organization_id: ownerOrganizationId,
-    role: "owner",
+    role: "manager",
     status: "active",
-    user_id: ownerId,
+    user_id: managerId,
   });
   await insertFixture("membership_operations", {
-    membership_id: ownerMembershipId,
+    membership_id: managerMembershipId,
     operation_id: ownerOperationId,
     organization_id: ownerOrganizationId,
   });
@@ -182,8 +203,8 @@ test.beforeAll(async () => {
     role: "broker",
     status: "active",
   });
-  managerId = await createMembershipFixture({
-    email: managerEmail,
+  rlsManagerId = await createMembershipFixture({
+    email: rlsManagerEmail,
     operationId: ownerOperationId,
     organizationId: ownerOrganizationId,
     role: "manager",
@@ -239,6 +260,7 @@ test.afterAll(async () => {
     ownerId,
     brokerId,
     managerId,
+    rlsManagerId,
     outsiderId,
     pendingId,
   ]) {
@@ -485,7 +507,7 @@ test("enforces every exposed table boundary and denies all client writes", async
     auth: { autoRefreshToken: false, persistSession: false },
   });
   await manager.auth.signInWithPassword({
-    email: managerEmail,
+    email: rlsManagerEmail,
     password: ownerPassword,
   });
 
@@ -530,8 +552,11 @@ test("enforces every exposed table boundary and denies all client writes", async
 
   for (const probe of probes) {
     const anonymousRead = await anonymous.from(probe.table).select("*");
-    expect(anonymousRead.error, `${probe.table}: anonymous read`).toBeNull();
-    expect(anonymousRead.data).toEqual([]);
+    expect(
+      anonymousRead.error?.code,
+      `${probe.table}: anonymous read`,
+    ).toBe("42501");
+    expect(anonymousRead.data).toBeNull();
 
     const pendingRead = await pending.from(probe.table).select("*");
     expect(pendingRead.error, `${probe.table}: pending read`).toBeNull();

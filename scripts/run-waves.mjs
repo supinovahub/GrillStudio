@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -243,7 +243,13 @@ function parseEnvironment(output) {
 }
 
 function resolvePreviewEnvironment(worktree, branch, prNumber) {
-  const managementEnvironment = environmentWithNode(process.env);
+  const supabaseHome = path.join(worktree, ".orchestrator", "supabase-cli");
+  mkdirSync(supabaseHome, { recursive: true });
+  const managementEnvironment = {
+    ...environmentWithNode(process.env),
+    SUPABASE_HOME: supabaseHome,
+    SUPABASE_TELEMETRY_DISABLED: "1",
+  };
   const cleanEnvironment = environmentWithNode(withoutSupabaseCredentials());
   const output = run(
     "pnpm",
@@ -277,8 +283,8 @@ function resolvePreviewEnvironment(worktree, branch, prNumber) {
     branchEnvironment.SUPABASE_SERVICE_ROLE_KEY ??
     branchEnvironment.SERVICE_ROLE_KEY;
   const databaseUrl =
-    branchEnvironment.POSTGRES_URL_NON_POOLING ??
-    branchEnvironment.POSTGRES_URL;
+    branchEnvironment.POSTGRES_URL ??
+    branchEnvironment.POSTGRES_URL_NON_POOLING;
 
   if (!supabaseUrl || !publicKey || !serviceRoleKey || !databaseUrl) {
     throw new Error(
@@ -317,7 +323,9 @@ function resolvePreviewEnvironment(worktree, branch, prNumber) {
     PREVIEW_AUTH_EMAIL_ALLOWLIST: "@example.com",
     SUPABASE_ANON_KEY: publicKey,
     SUPABASE_BRANCH_NAME: branch,
+    SUPABASE_HOME: supabaseHome,
     SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+    SUPABASE_TELEMETRY_DISABLED: "1",
     SUPABASE_URL: supabaseUrl,
   };
 }
@@ -370,6 +378,49 @@ function verifyPreviewDatabase(worktree, environment) {
   }
 }
 
+function verifyGeneratedTypes(worktree, environment) {
+  const previewProjectRef = environment.APP_EXPECTED_SUPABASE_PROJECT_REF;
+  if (!previewProjectRef) {
+    throw new Error("Preview Branch project ref is required for generated types");
+  }
+
+  const result = spawnSync(
+    "pnpm",
+    [
+      "dlx",
+      `supabase@${SUPABASE_CLI_VERSION}`,
+      "gen",
+      "types",
+      "--project-id",
+      previewProjectRef,
+      "--schema",
+      "public",
+    ],
+    {
+      cwd: worktree,
+      encoding: "utf8",
+      env: environment,
+      stdio: ["ignore", "pipe", "inherit"],
+    },
+  );
+
+  if (result.status !== 0) {
+    throw new Error("Supabase Preview type generation failed");
+  }
+
+  const typeFile = path.join(worktree, "src", "types", "database.ts");
+  const marker =
+    "// Application aliases derived from the generated RPC contracts above.";
+  const trackedTypes = readFileSync(typeFile, "utf8").split(marker)[0].trim();
+  const generatedTypes = result.stdout.trim();
+
+  if (trackedTypes !== generatedTypes) {
+    throw new Error(
+      "Generated Supabase types differ from src/types/database.ts",
+    );
+  }
+}
+
 function verifyImplementation(worktree, environment) {
   run(process.execPath, ["scripts/validate-cloud-boundary.mjs"], {
     cwd: worktree,
@@ -402,6 +453,7 @@ function verifyImplementation(worktree, environment) {
     }
   }
   verifyPreviewDatabase(worktree, environment);
+  verifyGeneratedTypes(worktree, environment);
   if (packageHasScript(worktree, "test:blackbox", environment)) {
     run("pnpm", ["exec", "playwright", "install", "chromium"], {
       cwd: worktree,
