@@ -175,6 +175,84 @@ async function forceResponseBatchReady(batchId: string) {
   `;
 }
 
+type AutomationGate = "capacity" | "handoff" | "manual_pause" | "optout";
+
+const automationGates: Array<{
+  expectedReason: string;
+  gate: AutomationGate;
+}> = [
+  { expectedReason: "human_owned", gate: "handoff" },
+  { expectedReason: "operation_manual_pause", gate: "manual_pause" },
+  { expectedReason: "active_opt_out", gate: "optout" },
+  { expectedReason: "capacity_not_active", gate: "capacity" },
+];
+
+async function closeAutomationGate(
+  conversationId: string,
+  gate: AutomationGate,
+) {
+  if (gate === "handoff") {
+    const versionRows = await database<Array<{ version: number }>>`
+      select version
+      from public.conversations
+      where id = ${conversationId}::uuid
+    `;
+    const assumed = await owner.rpc("assume_conversation", {
+      expected_version: versionRows[0]!.version,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_conversation_id: conversationId,
+    });
+    expect(assumed.error).toBeNull();
+  } else if (gate === "manual_pause") {
+    await database`
+      update private.operation_capacity_state
+      set
+        manual_proactive_paused = true,
+        manual_pause_reason = 'teste de fence pós-lease',
+        updated_at = now()
+      where operation_id = ${operationId}::uuid
+    `;
+  } else if (gate === "optout") {
+    await database`
+      insert into public.opt_outs (
+        organization_id, contact_id, status, reason
+      )
+      select
+        conversation.organization_id,
+        conversation.contact_id,
+        'active',
+        'teste de fence pós-lease'
+      from public.conversations as conversation
+      where conversation.id = ${conversationId}::uuid
+    `;
+  } else {
+    await database.begin(async (sql) => {
+      await sql`
+        delete from private.conversation_capacity_slots
+        where conversation_id = ${conversationId}::uuid
+      `;
+      await sql`
+        update public.conversations
+        set capacity_state = 'excluded', updated_at = now(), version = version + 1
+        where id = ${conversationId}::uuid
+      `;
+    });
+  }
+}
+
+async function reopenManualAutomationGate(gate: AutomationGate) {
+  if (gate !== "manual_pause") return;
+  await database`
+    update private.operation_capacity_state
+    set
+      manual_proactive_paused = false,
+      manual_pause_reason = null,
+      updated_at = now()
+    where operation_id = ${operationId}::uuid
+  `;
+}
+
 test.describe.configure({ mode: "serial", timeout: 60_000 });
 
 test.beforeAll(async () => {
@@ -863,6 +941,216 @@ test("claim cancela batch após handoff, pausa ou opt-out", async () => {
   }
 });
 
+test("close concorrente com claim respeita a ordem global sem deadlock", async () => {
+  const conversationId = await createAdmittedConversation();
+  await insertProviderMessage(conversationId, {
+    body: "mensagem concorrente",
+  });
+  const batchId = await responseBatchId(conversationId);
+  await forceResponseBatchReady(batchId);
+  const versions = await database<Array<{ version: number }>>`
+    select version
+    from private.pedro_response_batches
+    where id = ${batchId}::uuid
+  `;
+  const commandId = randomUUID();
+  const effectKey = `t07:test-close-claim:${commandId}`;
+  await database`
+    select private.enqueue_capacity_command(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      null,
+      ${conversationId}::uuid,
+      null,
+      'close_response_batch',
+      jsonb_build_object(
+        'batch_id', ${batchId}::uuid,
+        'batch_version', ${versions[0]!.version}
+      ),
+      ${effectKey},
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  const workerId = randomUUID();
+
+  const [closed, claimed] = await Promise.all([
+    database.begin(async (sql) => {
+      await sql`set local statement_timeout = '5s'`;
+      return sql<Array<{ result: { status: string } }>>`
+        select private.process_capacity_command(command.id) as result
+        from private.operation_capacity_commands as command
+        where command.operation_id = ${operationId}::uuid
+          and command.effect_key = ${effectKey}
+      `;
+    }),
+    database.begin(async (sql) => {
+      await sql`set local statement_timeout = '5s'`;
+      return sql<
+        Array<{ result: { lease_token: string; status: string } }>
+      >`
+        select private.claim_ready_response_batch(
+          ${operationId}::uuid,
+          ${batchId}::uuid,
+          ${`t07:test-ai-turn:${batchId}`},
+          ${workerId}::uuid,
+          30,
+          ${randomUUID()}::uuid,
+          ${randomUUID()}::uuid
+        ) as result
+      `;
+    }),
+  ]);
+
+  expect(closed[0]!.result.status).toBe("cancelled");
+  expect(claimed[0]!.result.status).toBe("processing");
+  const terminal = await database<
+    Array<{ batch_status: string; command_status: string }>
+  >`
+    select
+      batch.status as batch_status,
+      command.status as command_status
+    from private.pedro_response_batches as batch
+    join private.operation_capacity_commands as command
+      on command.effect_key = ${effectKey}
+    where batch.id = ${batchId}::uuid
+  `;
+  expect(terminal[0]).toEqual({
+    batch_status: "processing",
+    command_status: "cancelled",
+  });
+  await database`
+    select private.cancel_response_batch(
+      ${operationId}::uuid,
+      ${batchId}::uuid,
+      'limpeza após teste concorrente',
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+});
+
+test("gates são revalidados no complete, consume e registro outbound", async () => {
+  for (const phase of ["complete", "consume"] as const) {
+    for (const scenario of automationGates) {
+      const conversationId = await createAdmittedConversation();
+      await insertProviderMessage(conversationId, {
+        body: `${phase} antes de ${scenario.gate}`,
+      });
+      const batchId = await responseBatchId(conversationId);
+      await forceResponseBatchReady(batchId);
+      const workerId = randomUUID();
+      const claimed = await database<
+        Array<{
+          result: {
+            effect_key: string;
+            input_hash: string;
+            lease_token: string;
+          };
+        }>
+      >`
+        select private.claim_ready_response_batch(
+          ${operationId}::uuid,
+          ${batchId}::uuid,
+          ${`t07:test-${phase}:${scenario.gate}:${batchId}`},
+          ${workerId}::uuid,
+          30,
+          ${randomUUID()}::uuid,
+          ${randomUUID()}::uuid
+        ) as result
+      `;
+      const lease = claimed[0]!.result;
+      if (phase === "consume") {
+        await database`
+          select private.complete_response_batch(
+            ${operationId}::uuid,
+            ${batchId}::uuid,
+            ${lease.effect_key},
+            ${workerId}::uuid,
+            ${lease.lease_token}::uuid,
+            ${lease.input_hash},
+            ${randomUUID()}::uuid,
+            ${randomUUID()}::uuid
+          )
+        `;
+      }
+
+      try {
+        await closeAutomationGate(conversationId, scenario.gate);
+        const fenced =
+          phase === "complete"
+            ? await database<
+                Array<{ result: { reason: string; status: string } }>
+              >`
+                select private.complete_response_batch(
+                  ${operationId}::uuid,
+                  ${batchId}::uuid,
+                  ${lease.effect_key},
+                  ${workerId}::uuid,
+                  ${lease.lease_token}::uuid,
+                  ${lease.input_hash},
+                  ${randomUUID()}::uuid,
+                  ${randomUUID()}::uuid
+                ) as result
+              `
+            : await database<
+                Array<{ result: { reason: string; status: string } }>
+              >`
+                select private.consume_response_batch(
+                  ${operationId}::uuid,
+                  ${batchId}::uuid,
+                  ${lease.effect_key},
+                  ${workerId}::uuid,
+                  ${lease.lease_token}::uuid
+                ) as result
+              `;
+        expect(fenced[0]!.result).toMatchObject({
+          reason: scenario.expectedReason,
+          status: "cancelled",
+        });
+        const batch = await database<Array<{ status: string }>>`
+          select status
+          from private.pedro_response_batches
+          where id = ${batchId}::uuid
+        `;
+        expect(batch[0]!.status).toBe("cancelled");
+      } finally {
+        await reopenManualAutomationGate(scenario.gate);
+      }
+    }
+  }
+
+  for (const scenario of automationGates) {
+    const conversationId = await createAdmittedConversation();
+    const effectKey = `t07:test-outbound:${scenario.gate}:${conversationId}`;
+    try {
+      await closeAutomationGate(conversationId, scenario.gate);
+      await expect(
+        database`
+          select private.record_pedro_outbound_sent(
+            ${operationId}::uuid,
+            ${conversationId}::uuid,
+            ${effectKey},
+            now(),
+            ${randomUUID()}::uuid,
+            ${randomUUID()}::uuid
+          )
+        `,
+      ).rejects.toMatchObject({ code: "55000" });
+      const effects = await database<Array<{ count: number }>>`
+        select count(*)::integer as count
+        from private.pedro_outbound_effects
+        where operation_id = ${operationId}::uuid
+          and effect_key = ${effectKey}
+      `;
+      expect(effects[0]!.count).toBe(0);
+    } finally {
+      await reopenManualAutomationGate(scenario.gate);
+    }
+  }
+});
+
 test("novo inbound e edit durante processing invalidam o snapshot", async () => {
   const conversationId = await createAdmittedConversation();
   const messageId = await insertProviderMessage(conversationId, {
@@ -1491,7 +1779,7 @@ test("loop de maintenance compacta histórico com limite explícito", async () =
       )
     `;
 
-    for (const index of [1, 2, 3]) {
+    for (let index = 1; index <= 11; index += 1) {
       await sql`
         select private.schedule_t07_job(
           ${organizationId}::uuid,
@@ -1541,9 +1829,119 @@ test("loop de maintenance compacta histórico com limite explícito", async () =
         and job_type = 't07.capacity_maintenance'
     `;
 
+    await sql`
+      insert into private.processing_attempts (
+        organization_id,
+        operation_id,
+        queue_name,
+        envelope_id,
+        aggregate_type,
+        aggregate_id,
+        worker_id,
+        lease_token,
+        attempt,
+        state,
+        trace_id,
+        correlation_id
+      )
+      select
+        job.organization_id,
+        job.operation_id,
+        'scheduled_actions',
+        job.id,
+        'operation_capacity',
+        job.operation_id,
+        gen_random_uuid(),
+        gen_random_uuid(),
+        attempt_number,
+        case when attempt_number = 1 then 'claimed' else 'succeeded' end,
+        gen_random_uuid(),
+        gen_random_uuid()
+      from public.scheduled_jobs as job
+      cross join generate_series(1, 2) as attempts(attempt_number)
+      where job.operation_id = ${compactOperationId}::uuid
+        and job.job_type = 't07.capacity_maintenance'
+    `;
+
+    const oldest = await sql<Array<{ id: string }>>`
+      select id
+      from public.scheduled_jobs
+      where operation_id = ${compactOperationId}::uuid
+        and job_type = 't07.capacity_maintenance'
+      order by coalesce(completed_at, updated_at), id
+      limit 2
+    `;
+    const protectedJobId = oldest[0]!.id;
+    const evidenceJobId = oldest[1]!.id;
+    await sql`
+      select private.enqueue_capacity_command(
+        ${organizationId}::uuid,
+        ${compactOperationId}::uuid,
+        ${protectedJobId}::uuid,
+        null,
+        null,
+        'maintenance',
+        jsonb_build_object('protected_job_id', ${protectedJobId}::uuid),
+        ${`t07:test-protected-command:${protectedJobId}`},
+        now() + interval '1 day',
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      )
+    `;
+    await sql`
+      insert into private.processing_attempts (
+        organization_id,
+        operation_id,
+        queue_name,
+        envelope_id,
+        aggregate_type,
+        aggregate_id,
+        worker_id,
+        lease_token,
+        attempt,
+        state,
+        trace_id,
+        correlation_id
+      )
+      values
+        (
+          ${organizationId}::uuid,
+          ${compactOperationId}::uuid,
+          'scheduled_actions',
+          ${evidenceJobId}::uuid,
+          'operation_capacity',
+          ${compactOperationId}::uuid,
+          gen_random_uuid(),
+          gen_random_uuid(),
+          3,
+          'dead_lettered',
+          gen_random_uuid(),
+          gen_random_uuid()
+        ),
+        (
+          ${organizationId}::uuid,
+          ${compactOperationId}::uuid,
+          'scheduled_actions',
+          ${evidenceJobId}::uuid,
+          'operation_capacity',
+          ${compactOperationId}::uuid,
+          gen_random_uuid(),
+          gen_random_uuid(),
+          4,
+          'replayed',
+          gen_random_uuid(),
+          gen_random_uuid()
+        )
+    `;
+
     const result = await sql<
       Array<{
-        result: { deleted_effects: number; deleted_jobs: number };
+        result: {
+          deleted_attempts: number;
+          deleted_effects: number;
+          deleted_jobs: number;
+          retained_jobs: number;
+        };
       }>
     >`
       select private.compact_t07_capacity_maintenance_history(
@@ -1553,7 +1951,14 @@ test("loop de maintenance compacta histórico com limite explícito", async () =
       ) as result
     `;
     const remaining = await sql<
-      Array<{ effects: number; jobs: number }>
+      Array<{
+        attempts: number;
+        commands: number;
+        effects: number;
+        evidence: number;
+        jobs: number;
+        protected_job: boolean;
+      }>
     >`
       select
         (
@@ -1567,7 +1972,31 @@ test("loop de maintenance compacta histórico com limite explícito", async () =
           from private.effect_ledger
           where operation_id = ${compactOperationId}::uuid
             and effect_type = 't07.capacity_maintenance'
-        ) as effects
+        ) as effects,
+        (
+          select count(*)::integer
+          from private.processing_attempts
+          where operation_id = ${compactOperationId}::uuid
+            and queue_name = 'scheduled_actions'
+        ) as attempts,
+        (
+          select count(*)::integer
+          from private.processing_attempts
+          where operation_id = ${compactOperationId}::uuid
+            and envelope_id = ${evidenceJobId}::uuid
+            and state in ('dead_lettered', 'replayed')
+        ) as evidence,
+        (
+          select count(*)::integer
+          from private.operation_capacity_commands
+          where operation_id = ${compactOperationId}::uuid
+            and status = 'pending'
+        ) as commands,
+        exists (
+          select 1
+          from public.scheduled_jobs
+          where id = ${protectedJobId}::uuid
+        ) as protected_job
     `;
 
     await sql`
@@ -1578,8 +2007,20 @@ test("loop de maintenance compacta histórico com limite explícito", async () =
   });
 
   expect(compacted).toEqual({
-    remaining: { effects: 2, jobs: 2 },
-    result: { deleted_effects: 2, deleted_jobs: 2 },
+    remaining: {
+      attempts: 8,
+      commands: 1,
+      effects: 3,
+      evidence: 2,
+      jobs: 3,
+      protected_job: true,
+    },
+    result: {
+      deleted_attempts: 18,
+      deleted_effects: 9,
+      deleted_jobs: 9,
+      retained_jobs: 2,
+    },
   });
 });
 

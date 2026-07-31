@@ -1917,6 +1917,7 @@ as $$
 declare
   deleted_jobs integer := 0;
   deleted_effects integer := 0;
+  deleted_attempts integer := 0;
 begin
   if target_operation_id is null
     or retained_jobs not between 1 and 10000
@@ -1937,13 +1938,19 @@ begin
     from public.scheduled_jobs as job
     where job.operation_id = target_operation_id
       and job.job_type = 't07.capacity_maintenance'
-      and job.status in ('completed', 'cancelled', 'dead')
+      and job.status in ('completed', 'cancelled')
   ),
   doomed as (
     select job.id
     from public.scheduled_jobs as job
     join ranked on ranked.id = job.id
     where ranked.recency_rank > retained_jobs
+      and not exists (
+        select 1
+        from private.operation_capacity_commands as command
+        where command.scheduled_job_id = job.id
+          and command.status in ('pending', 'processing')
+      )
     order by
       coalesce(job.completed_at, job.updated_at),
       job.id
@@ -1954,7 +1961,21 @@ begin
     delete from public.scheduled_jobs as job
     using doomed
     where job.id = doomed.id
-    returning job.organization_id, job.operation_id, job.effect_key
+    returning
+      job.id as scheduled_job_id,
+      job.organization_id,
+      job.operation_id,
+      job.effect_key
+  ),
+  removed_attempts as (
+    delete from private.processing_attempts as attempt
+    using removed_jobs as removed
+    where attempt.organization_id = removed.organization_id
+      and attempt.operation_id = removed.operation_id
+      and attempt.queue_name = 'scheduled_actions'
+      and attempt.envelope_id = removed.scheduled_job_id
+      and attempt.state not in ('dead_lettered', 'replayed')
+    returning attempt.id
   ),
   removed_effects as (
     delete from private.effect_ledger as effect
@@ -1967,12 +1988,14 @@ begin
   )
   select
     (select count(*)::integer from removed_jobs),
-    (select count(*)::integer from removed_effects)
-  into deleted_jobs, deleted_effects;
+    (select count(*)::integer from removed_effects),
+    (select count(*)::integer from removed_attempts)
+  into deleted_jobs, deleted_effects, deleted_attempts;
 
   return jsonb_build_object(
     'deleted_jobs', deleted_jobs,
     'deleted_effects', deleted_effects,
+    'deleted_attempts', deleted_attempts,
     'retained_jobs', retained_jobs
   );
 end;
@@ -3003,6 +3026,92 @@ select cron.schedule(
   'select private.consume_capacity_commands(25);'
 );
 
+create or replace function private.lock_response_batch_automation_context(
+  target_operation_id uuid,
+  target_batch_id uuid
+)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  batch_snapshot private.pedro_response_batches%rowtype;
+  locked_batch private.pedro_response_batches%rowtype;
+  state_record private.operation_capacity_state%rowtype;
+  conversation_record public.conversations%rowtype;
+  slot_conversation_id uuid;
+begin
+  -- Snapshot only supplies routing keys. The global lock order is then
+  -- OperationCapacity -> Slot -> Conversation -> ResponseBatch.
+  select batch.*
+  into strict batch_snapshot
+  from private.pedro_response_batches as batch
+  where batch.operation_id = target_operation_id
+    and batch.id = target_batch_id;
+
+  select state.*
+  into strict state_record
+  from private.operation_capacity_state as state
+  where state.operation_id = target_operation_id
+  for update;
+
+  select slot.conversation_id
+  into slot_conversation_id
+  from private.conversation_capacity_slots as slot
+  where slot.operation_id = target_operation_id
+    and slot.conversation_id = batch_snapshot.conversation_id
+  for update;
+
+  select conversation.*
+  into strict conversation_record
+  from public.conversations as conversation
+  where conversation.operation_id = target_operation_id
+    and conversation.id = batch_snapshot.conversation_id
+  for update;
+
+  select batch.*
+  into strict locked_batch
+  from private.pedro_response_batches as batch
+  where batch.operation_id = target_operation_id
+    and batch.id = target_batch_id
+  for update;
+
+  if locked_batch.conversation_id is distinct from batch_snapshot.conversation_id
+    or locked_batch.operation_id is distinct from batch_snapshot.operation_id
+  then
+    raise exception 'response batch routing changed while locking'
+      using errcode = '40001';
+  end if;
+
+  return case
+    when state_record.manual_proactive_paused
+      then 'operation_manual_pause'
+    when conversation_record.status <> 'active'
+      then 'conversation_inactive'
+    when conversation_record.ownership_type <> 'pedro'
+      then 'human_owned'
+    when conversation_record.is_paused
+      then 'conversation_paused'
+    when exists (
+      select 1
+      from public.opt_outs as opt_out
+      where opt_out.organization_id = conversation_record.organization_id
+        and opt_out.contact_id = conversation_record.contact_id
+        and opt_out.status = 'active'
+    ) then 'active_opt_out'
+    when conversation_record.capacity_state <> 'active'
+      or slot_conversation_id is null
+      then 'capacity_not_active'
+    else null
+  end;
+end;
+$$;
+
+revoke all on function private.lock_response_batch_automation_context(
+  uuid, uuid
+) from public, anon, authenticated, service_role;
+
 create or replace function private.claim_ready_response_batch(
   target_operation_id uuid,
   target_batch_id uuid,
@@ -3019,7 +3128,6 @@ set search_path = ''
 as $$
 declare
   batch_record private.pedro_response_batches%rowtype;
-  conversation_record public.conversations%rowtype;
   message_payload jsonb;
   input_hash_value text;
   lease_token_value uuid;
@@ -3034,35 +3142,19 @@ begin
       using errcode = '22023';
   end if;
 
+  ineligible_reason := private.lock_response_batch_automation_context(
+    target_operation_id,
+    target_batch_id
+  );
+
+  -- Re-read after all routing locks. Close/cancel may have won while the
+  -- initial snapshot waited on OperationCapacity or Conversation.
   select batch.*
   into strict batch_record
   from private.pedro_response_batches as batch
   where batch.operation_id = target_operation_id
     and batch.id = target_batch_id
   for update;
-
-  -- Claim is the final automation fence. A ready or recoverable batch must
-  -- not survive a human handoff, a pause, or an active Contact opt-out.
-  select conversation.*
-  into strict conversation_record
-  from public.conversations as conversation
-  where conversation.operation_id = target_operation_id
-    and conversation.id = batch_record.conversation_id
-  for update;
-
-  ineligible_reason := case
-    when conversation_record.status <> 'active' then 'conversation_inactive'
-    when conversation_record.ownership_type <> 'pedro' then 'human_owned'
-    when conversation_record.is_paused then 'conversation_paused'
-    when exists (
-      select 1
-      from public.opt_outs as opt_out
-      where opt_out.organization_id = conversation_record.organization_id
-        and opt_out.contact_id = conversation_record.contact_id
-        and opt_out.status = 'active'
-    ) then 'active_opt_out'
-    else null
-  end;
 
   if ineligible_reason is not null
     and batch_record.status in ('ready', 'processing', 'completed')
@@ -3235,7 +3327,13 @@ set search_path = ''
 as $$
 declare
   batch_record private.pedro_response_batches%rowtype;
+  ineligible_reason text;
 begin
+  ineligible_reason := private.lock_response_batch_automation_context(
+    target_operation_id,
+    target_batch_id
+  );
+
   select batch.*
   into strict batch_record
   from private.pedro_response_batches as batch
@@ -3252,6 +3350,20 @@ begin
       and batch_record.processing_lease_token
         is not distinct from target_lease_token
     then
+      if ineligible_reason is not null then
+        perform private.cancel_response_batch(
+          batch_record.operation_id,
+          batch_record.id,
+          'completion rejected: ' || ineligible_reason,
+          request_trace_id,
+          request_correlation_id
+        );
+        return jsonb_build_object(
+          'status', 'cancelled',
+          'batch_id', batch_record.id,
+          'reason', ineligible_reason
+        );
+      end if;
       return jsonb_build_object(
         'status', 'duplicate',
         'lease_token', batch_record.processing_lease_token
@@ -3271,6 +3383,21 @@ begin
   then
     raise exception 'response batch processing lease is stale'
       using errcode = '40001';
+  end if;
+
+  if ineligible_reason is not null then
+    perform private.cancel_response_batch(
+      batch_record.operation_id,
+      batch_record.id,
+      'completion rejected: ' || ineligible_reason,
+      request_trace_id,
+      request_correlation_id
+    );
+    return jsonb_build_object(
+      'status', 'cancelled',
+      'batch_id', batch_record.id,
+      'reason', ineligible_reason
+    );
   end if;
 
   update private.pedro_response_batches
@@ -3306,7 +3433,13 @@ set search_path = ''
 as $$
 declare
   batch_record private.pedro_response_batches%rowtype;
+  ineligible_reason text;
 begin
+  ineligible_reason := private.lock_response_batch_automation_context(
+    target_operation_id,
+    target_batch_id
+  );
+
   select batch.*
   into strict batch_record
   from private.pedro_response_batches as batch
@@ -3331,6 +3464,21 @@ begin
   if batch_record.status <> 'completed' then
     raise exception 'response batch is not completed'
       using errcode = '55000';
+  end if;
+
+  if ineligible_reason is not null then
+    perform private.cancel_response_batch(
+      batch_record.operation_id,
+      batch_record.id,
+      'consume rejected: ' || ineligible_reason,
+      batch_record.trace_id,
+      batch_record.correlation_id
+    );
+    return jsonb_build_object(
+      'status', 'cancelled',
+      'batch_id', batch_record.id,
+      'reason', ineligible_reason
+    );
   end if;
 
   update private.pedro_response_batches
@@ -3473,6 +3621,14 @@ begin
       using errcode = '22023';
   end if;
 
+  -- Serialize candidate choice at the OperationCapacity boundary without
+  -- taking a ResponseBatch lock out of order. A waiter then observes the
+  -- previous winner and can choose the next eligible batch.
+  perform state.operation_id
+  from private.operation_capacity_state as state
+  where state.operation_id = target_operation_id
+  for update;
+
   select batch.*
   into candidate_record
   from private.pedro_response_batches as batch
@@ -3496,8 +3652,7 @@ begin
       batch.ready_at
     ),
     batch.id
-  limit 1
-  for update skip locked;
+  limit 1;
 
   if candidate_record.id is null then
     return jsonb_build_object('status', 'idle');
@@ -3707,6 +3862,7 @@ declare
   state_record private.operation_capacity_state%rowtype;
   conversation_record public.conversations%rowtype;
   existing_record private.pedro_outbound_effects%rowtype;
+  slot_conversation_id uuid;
 begin
   select state.*
   into strict state_record
@@ -3714,7 +3870,8 @@ begin
   where state.operation_id = target_operation_id
   for update;
 
-  perform slot.conversation_id
+  select slot.conversation_id
+  into slot_conversation_id
   from private.conversation_capacity_slots as slot
   where slot.operation_id = target_operation_id
     and slot.conversation_id = target_conversation_id
@@ -3744,10 +3901,21 @@ begin
     return jsonb_build_object('status', 'duplicate');
   end if;
 
-  if conversation_record.ownership_type <> 'pedro'
+  if state_record.manual_proactive_paused
+    or conversation_record.status <> 'active'
+    or conversation_record.ownership_type <> 'pedro'
+    or conversation_record.is_paused
     or conversation_record.capacity_state <> 'active'
+    or slot_conversation_id is null
+    or exists (
+      select 1
+      from public.opt_outs as opt_out
+      where opt_out.organization_id = conversation_record.organization_id
+        and opt_out.contact_id = conversation_record.contact_id
+        and opt_out.status = 'active'
+    )
   then
-    raise exception 'Pedro outbound requires active Pedro ownership'
+    raise exception 'Pedro outbound automation gate is closed'
       using errcode = '55000';
   end if;
 
