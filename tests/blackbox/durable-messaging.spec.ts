@@ -2472,7 +2472,6 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
 });
 
 test("resolução e redelivery de alerta de infraestrutura não invertem locks", async () => {
-  const deadLetterId = randomUUID();
   const envelopeId = randomUUID();
   const traceId = randomUUID();
   const correlationId = randomUUID();
@@ -2496,8 +2495,12 @@ test("resolução e redelivery de alerta de infraestrutura não invertem locks",
       ${correlationId}::uuid
     )
   `;
-  const fixture = await database<Array<{ alert_id: string }>>`
-    select alert.id as alert_id
+  const fixture = await database<
+    Array<{ alert_id: string; dead_letter_id: string }>
+  >`
+    select
+      alert.id as alert_id,
+      letter.id as dead_letter_id
     from private.durable_processing_alerts as alert
     join private.dead_letters as letter
       on letter.id = alert.dead_letter_id
@@ -2505,6 +2508,7 @@ test("resolução e redelivery de alerta de infraestrutura não invertem locks",
       and letter.source_message_id = ${sourceMessageId}::bigint
   `;
   const alertId = fixture[0]!.alert_id;
+  const deadLetterId = fixture[0]!.dead_letter_id;
   const deadlocksBefore = await database<Array<{ total: number }>>`
     select deadlocks::integer as total
     from pg_stat_database
