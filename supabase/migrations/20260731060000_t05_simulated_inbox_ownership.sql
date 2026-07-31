@@ -1087,8 +1087,8 @@ declare
   phone_record public.contact_phones%rowtype;
   opportunity_record public.opportunities%rowtype;
   identity_record public.provider_identities%rowtype;
-  provider_message_id text;
-  provider_chat_id text;
+  provider_message_id_value text;
+  provider_chat_id_value text;
   message_kind text;
   message_body text;
   identity_display_name text;
@@ -1124,11 +1124,11 @@ begin
       using errcode = '22023';
   end if;
 
-  provider_message_id := nullif(
+  provider_message_id_value := nullif(
     left(btrim(coalesce(normalized_event ->> 'provider_message_id', '')), 500),
     ''
   );
-  provider_chat_id := nullif(
+  provider_chat_id_value := nullif(
     left(btrim(coalesce(normalized_event ->> 'provider_chat_id', '')), 500),
     ''
   );
@@ -1159,8 +1159,8 @@ begin
     '[]'::jsonb
   );
 
-  if provider_message_id is null
-    or provider_chat_id is null
+  if provider_message_id_value is null
+    or provider_chat_id_value is null
     or message_kind not in (
       'text', 'image', 'document', 'audio', 'video', 'unknown'
     )
@@ -1223,7 +1223,7 @@ begin
   perform pg_advisory_xact_lock(
     hashtextextended(
       'simulator-inbound:' || target_connection_id::text
-        || ':' || provider_message_id,
+        || ':' || provider_message_id_value,
       0
     )
   );
@@ -1232,7 +1232,7 @@ begin
   into existing_message
   from public.messages as message
   where message.connection_id = target_connection_id
-    and message.provider_message_id = provider_message_id;
+    and message.provider_message_id = provider_message_id_value;
 
   if existing_message.id is not null then
     return jsonb_build_object(
@@ -1246,7 +1246,7 @@ begin
     select 1
     from private.simulator_inbound_reviews as review
     where review.connection_id = target_connection_id
-      and review.provider_message_id = provider_message_id
+      and review.provider_message_id = provider_message_id_value
   ) then
     return jsonb_build_object('status', 'requires_review');
   end if;
@@ -1255,7 +1255,7 @@ begin
   into conversation_record
   from public.conversations as conversation
   where conversation.connection_id = target_connection_id
-    and conversation.provider_chat_id = provider_chat_id
+    and conversation.provider_chat_id = provider_chat_id_value
     and conversation.status in ('active', 'sleeping')
   for update;
 
@@ -1339,7 +1339,7 @@ begin
         connection_record.organization_id,
         connection_record.operation_id,
         connection_record.id,
-        provider_message_id,
+        provider_message_id_value,
         review_reason_value,
         normalized_event,
         request_trace_id,
@@ -1475,7 +1475,7 @@ begin
         connection_record.organization_id,
         connection_record.operation_id,
         connection_record.id,
-        provider_message_id,
+        provider_message_id_value,
         'ambiguous_identity',
         normalized_event,
         request_trace_id,
@@ -1690,7 +1690,7 @@ begin
         connection_record.organization_id,
         connection_record.operation_id,
         connection_record.id,
-        provider_message_id,
+        provider_message_id_value,
         'ambiguous_opportunity',
         normalized_event,
         request_trace_id,
@@ -1727,7 +1727,7 @@ begin
           connection_record.organization_id,
           connection_record.operation_id,
           connection_record.id,
-          provider_message_id,
+          provider_message_id_value,
           'ambiguous_opportunity',
           normalized_event,
           request_trace_id,
@@ -1835,7 +1835,7 @@ begin
       update public.conversations
       set
         connection_id = connection_record.id,
-        provider_chat_id = provider_chat_id,
+        provider_chat_id = provider_chat_id_value,
         requires_human_review =
           requires_human_review or requires_review,
         review_reason = case
@@ -1874,7 +1874,7 @@ begin
         contact_id,
         opportunity_id,
         connection_id,
-        provider_chat_id,
+        provider_chat_id_value,
         status,
         ownership_type,
         automation_mode,
@@ -1891,7 +1891,7 @@ begin
         contact_record.id,
         opportunity_record.id,
         connection_record.id,
-        provider_chat_id,
+        provider_chat_id_value,
         'active',
         'pedro',
         'shadow',
@@ -1916,7 +1916,7 @@ begin
         connection_record.organization_id,
         connection_record.operation_id,
         connection_record.id,
-        provider_message_id,
+        provider_message_id_value,
         review_reason_value,
         normalized_event,
         request_trace_id,
@@ -1955,7 +1955,7 @@ begin
     message_kind,
     message_body,
     'received',
-    provider_message_id,
+    provider_message_id_value,
     occurred_at,
     'provider'
   )
@@ -1989,7 +1989,7 @@ begin
       'conversation_id', conversation_record.id,
       'connection_id', connection_record.id,
       'provider_message_id_hash',
-        md5(provider_message_id),
+        md5(provider_message_id_value),
       'created_contact', created_contact,
       'created_opportunity', created_opportunity,
       'created_conversation', created_conversation,
