@@ -17,7 +17,7 @@ const managementNavigation = [
   ["Campanhas", "/app/campanhas"],
   ["Leads", "/app/leads"],
   ["Empreendimentos", "/app/empreendimentos"],
-  ["Pedro", "/app/pedro"],
+  ["Pedro", "/app/pedro/personas"],
   ["Relatórios", "/app/relatorios"],
   ["Configurações", "/app/configuracoes/equipe"],
 ] as const;

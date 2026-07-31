@@ -215,6 +215,178 @@ export type Database = {
           },
         ]
       }
+      context_publications: {
+        Row: {
+          behavioral_hash: string
+          behavioral_snapshot: Json
+          behavioral_version_id: string
+          combined_hash: string
+          factual_hash: string
+          factual_snapshot: Json
+          factual_version_id: string
+          id: string
+          operation_id: string
+          organization_id: string
+          publication_number: number
+          published_at: string
+          published_by_user_id: string
+        }
+        Insert: {
+          behavioral_hash: string
+          behavioral_snapshot: Json
+          behavioral_version_id: string
+          combined_hash: string
+          factual_hash: string
+          factual_snapshot: Json
+          factual_version_id: string
+          id?: string
+          operation_id: string
+          organization_id: string
+          publication_number: number
+          published_at?: string
+          published_by_user_id: string
+        }
+        Update: {
+          behavioral_hash?: string
+          behavioral_snapshot?: Json
+          behavioral_version_id?: string
+          combined_hash?: string
+          factual_hash?: string
+          factual_snapshot?: Json
+          factual_version_id?: string
+          id?: string
+          operation_id?: string
+          organization_id?: string
+          publication_number?: number
+          published_at?: string
+          published_by_user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "context_publications_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_behavior_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "behavioral_version_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "persona_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_factual__fkey"
+            columns: ["organization_id", "operation_id", "factual_version_id"]
+            isOneToOne: false
+            referencedRelation: "institutional_profile_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      institutional_profile_versions: {
+        Row: {
+          archived_at: string | null
+          archived_by_user_id: string | null
+          baseline_version_id: string | null
+          content_hash: string | null
+          created_at: string
+          created_by_user_id: string
+          diff_snapshot: Json | null
+          fields: Json
+          id: string
+          operation_id: string
+          organization_id: string
+          published_at: string | null
+          published_by_user_id: string | null
+          status: string
+          updated_at: string
+          validated_at: string | null
+          validated_by_user_id: string | null
+          validation_errors: Json
+          version: number
+          version_number: number
+        }
+        Insert: {
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id: string
+          diff_snapshot?: Json | null
+          fields?: Json
+          id?: string
+          operation_id: string
+          organization_id: string
+          published_at?: string | null
+          published_by_user_id?: string | null
+          status?: string
+          updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
+          version?: number
+          version_number: number
+        }
+        Update: {
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id?: string
+          diff_snapshot?: Json | null
+          fields?: Json
+          id?: string
+          operation_id?: string
+          organization_id?: string
+          published_at?: string | null
+          published_by_user_id?: string | null
+          status?: string
+          updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
+          version?: number
+          version_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "institutional_profile_versio_organization_id_operation_id_fkey1"
+            columns: ["organization_id", "operation_id", "baseline_version_id"]
+            isOneToOne: false
+            referencedRelation: "institutional_profile_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "institutional_profile_version_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "institutional_profile_versions_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       invitation_links: {
         Row: {
           created_at: string
@@ -492,6 +664,7 @@ export type Database = {
       }
       operation_settings: {
         Row: {
+          active_context_publication_id: string | null
           created_at: string
           operation_id: string
           organization_id: string
@@ -500,6 +673,7 @@ export type Database = {
           version: number
         }
         Insert: {
+          active_context_publication_id?: string | null
           created_at?: string
           operation_id: string
           organization_id: string
@@ -508,6 +682,7 @@ export type Database = {
           version?: number
         }
         Update: {
+          active_context_publication_id?: string | null
           created_at?: string
           operation_id?: string
           organization_id?: string
@@ -516,6 +691,17 @@ export type Database = {
           version?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "operation_settings_active_context_publication_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "active_context_publication_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "context_publications"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
           {
             foreignKeyName: "operation_settings_operation_id_fkey"
             columns: ["operation_id"]
@@ -658,6 +844,180 @@ export type Database = {
         }
         Relationships: []
       }
+      persona_versions: {
+        Row: {
+          archived_at: string | null
+          archived_by_user_id: string | null
+          baseline_version_id: string | null
+          biography: Json
+          content_hash: string | null
+          created_at: string
+          created_by_user_id: string
+          diff_snapshot: Json | null
+          id: string
+          identity: Json
+          instructions: Json
+          operation_id: string
+          organization_id: string
+          persona_id: string
+          protected_rules: Json
+          published_at: string | null
+          published_by_user_id: string | null
+          status: string
+          style_rules: Json
+          updated_at: string
+          validated_at: string | null
+          validated_by_user_id: string | null
+          validation_errors: Json
+          version: number
+          version_number: number
+        }
+        Insert: {
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          biography?: Json
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id: string
+          diff_snapshot?: Json | null
+          id?: string
+          identity?: Json
+          instructions?: Json
+          operation_id: string
+          organization_id: string
+          persona_id: string
+          protected_rules?: Json
+          published_at?: string | null
+          published_by_user_id?: string | null
+          status?: string
+          style_rules?: Json
+          updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
+          version?: number
+          version_number: number
+        }
+        Update: {
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          biography?: Json
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id?: string
+          diff_snapshot?: Json | null
+          id?: string
+          identity?: Json
+          instructions?: Json
+          operation_id?: string
+          organization_id?: string
+          persona_id?: string
+          protected_rules?: Json
+          published_at?: string | null
+          published_by_user_id?: string | null
+          status?: string
+          style_rules?: Json
+          updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
+          version?: number
+          version_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "persona_versions_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "persona_versions_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "persona_versions_organization_id_operation_id_persona_id_b_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "persona_id",
+              "baseline_version_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "persona_versions"
+            referencedColumns: [
+              "organization_id",
+              "operation_id",
+              "persona_id",
+              "id",
+            ]
+          },
+          {
+            foreignKeyName: "persona_versions_organization_id_operation_id_persona_id_fkey"
+            columns: ["organization_id", "operation_id", "persona_id"]
+            isOneToOne: false
+            referencedRelation: "personas"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+        ]
+      }
+      personas: {
+        Row: {
+          created_at: string
+          created_by_user_id: string
+          id: string
+          internal_name: string
+          operation_id: string
+          organization_id: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          created_by_user_id: string
+          id?: string
+          internal_name: string
+          operation_id: string
+          organization_id: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          created_by_user_id?: string
+          id?: string
+          internal_name?: string
+          operation_id?: string
+          organization_id?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "personas_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "personas_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
       staff_profiles: {
         Row: {
           created_at: string
@@ -779,6 +1139,16 @@ export type Database = {
         }
         Returns: Json
       }
+      archive_context_drafts: {
+        Args: {
+          behavioral_version_id: string
+          factual_version_id: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
       complete_invitation_registration: {
         Args: {
           registration_email: string
@@ -790,6 +1160,14 @@ export type Database = {
           request_trace_id: string
         }
         Returns: string
+      }
+      create_context_drafts: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
       }
       create_general_invitation_link: {
         Args: {
@@ -833,6 +1211,10 @@ export type Database = {
           post_call_opportunities: number
           revoked_sessions: number
         }[]
+      }
+      get_context_workspace: {
+        Args: { target_operation_id: string }
+        Returns: Json
       }
       get_invitation_entry: {
         Args: { invitation_token: string }
@@ -894,6 +1276,26 @@ export type Database = {
         Args: { target_operation_id: string }
         Returns: Json
       }
+      initialize_context_drafts: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
+      publish_context: {
+        Args: {
+          behavioral_expected_version: number
+          behavioral_version_id: string
+          factual_expected_version: number
+          factual_version_id: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
       regenerate_general_invitation_link: {
         Args: {
           request_correlation_id: string
@@ -919,6 +1321,31 @@ export type Database = {
           predefined_roles: string[]
         }[]
       }
+      save_institutional_profile_draft: {
+        Args: {
+          expected_version: number
+          profile_fields: Json
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          target_version_id: string
+        }
+        Returns: Json
+      }
+      save_persona_draft: {
+        Args: {
+          expected_version: number
+          persona_biography: Json
+          persona_identity: Json
+          persona_instructions: Json
+          persona_style_rules: Json
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          target_version_id: string
+        }
+        Returns: Json
+      }
       set_general_invitation_link_status: {
         Args: {
           request_correlation_id: string
@@ -931,6 +1358,18 @@ export type Database = {
           status: string
           token: string
         }[]
+      }
+      validate_context_drafts: {
+        Args: {
+          behavioral_expected_version: number
+          behavioral_version_id: string
+          factual_expected_version: number
+          factual_version_id: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
       }
     }
     Enums: {
@@ -1065,9 +1504,7 @@ export const Constants = {
   },
 } as const
 
-// Application aliases derived from the generated RPC contracts above.
 export type MemberWorkspace =
   Database["public"]["Functions"]["get_member_workspace_v2"]["Returns"][number]
-
 export type OperationShell =
   Database["public"]["Functions"]["get_operation_shell"]["Returns"][number]
