@@ -72,6 +72,10 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   if (database) {
     await database`
+      delete from public.operations
+      where id = ${operationId}::uuid
+    `;
+    await database`
       delete from public.organizations
       where id = ${organizationId}::uuid
     `;
