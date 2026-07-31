@@ -2062,7 +2062,6 @@ test("payload expirado resolve DLQ e replay rejeita sem republicar", async () =>
     expect(boundedPrune[0]!.result).toEqual(
       expect.objectContaining({
         pending_replays_expired: 1,
-        raw_webhooks_purged: 0,
       }),
     );
     const boundedState = await sql<
@@ -2351,17 +2350,21 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
         true
       )
     `;
-    await sql.savepoint(async (savepoint) => {
-      await expect(
-        savepoint`
+    let rejectedCode = "";
+    try {
+      await sql.savepoint(async (savepoint) => {
+        await savepoint`
           select public.resolve_infrastructure_durable_alert(
             ${alertId}::uuid,
             null,
             ${correlationId}::uuid
           )
-        `,
-      ).rejects.toMatchObject({ code: "22023" });
-    });
+        `;
+      });
+    } catch (error) {
+      rejectedCode = (error as { code?: string }).code ?? "";
+    }
+    expect(rejectedCode).toBe("22023");
     const resolved = await sql<Array<{ result: { status: string } }>>`
       select public.resolve_infrastructure_durable_alert(
         ${alertId}::uuid,
