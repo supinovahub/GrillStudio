@@ -335,6 +335,23 @@ test("retomada automática exige cinco minutos e nenhum inbound atrasado", async
     `;
   }
 
+  await database`
+    select private.apply_operation_capacity_command(
+      ${operationId}::uuid,
+      null,
+      'evaluate_resume',
+      null,
+      null,
+      null,
+      '2026-07-31T13:11:00Z'::timestamptz,
+      null,
+      null,
+      null,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+
   const resumed = await database<
     Array<{
       automatic_proactive_paused: boolean;
@@ -400,7 +417,7 @@ test("proativo respeita menos de dez, um por minuto e retry idempotente", async 
       'campaign',
       'campaign',
       null,
-      '2026-07-31T14:00:20Z'::timestamptz,
+      '2026-07-31T14:00:00Z'::timestamptz,
       ${firstEffect},
       null,
       null,
@@ -436,7 +453,7 @@ test("proativo respeita menos de dez, um por minuto e retry idempotente", async 
       'campaign',
       'campaign',
       null,
-      '2026-07-31T14:01:00Z'::timestamptz,
+      '2026-07-31T14:00:30Z'::timestamptz,
       ${secondEffect},
       null,
       null,

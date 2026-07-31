@@ -352,6 +352,10 @@ test.afterAll(async () => {
       delete from public.operations where id = ${operationId}::uuid
     `;
     await database`
+      delete from public.memberships
+      where organization_id = ${organizationId}::uuid
+    `;
+    await database`
       delete from public.organizations where id = ${organizationId}::uuid
     `;
     await database.end();
@@ -534,6 +538,16 @@ test("batch persiste delay e revisão mantém original imutável", async () => {
     where conversation_id = ${conversationId}::uuid
   `;
   const batchId = batches[0]!.id;
+  await database`
+    update private.pedro_response_batches
+    set
+      opened_at = now() - interval '31 seconds',
+      last_inbound_at = now() - interval '21 seconds',
+      grouping_due_at = now() - interval '1 second',
+      grouping_deadline_at = now() - interval '1 second',
+      updated_at = now()
+    where id = ${batchId}::uuid
+  `;
   const maintenanceKey = `t07-test-batch-maintenance:${batchId}`;
   await database`
     select private.enqueue_capacity_command(
@@ -556,7 +570,14 @@ test("batch persiste delay e revisão mantém original imutável", async () => {
     where command.operation_id = ${operationId}::uuid
       and command.effect_key = ${maintenanceKey}
   `;
-  await database`select private.consume_capacity_commands(25)`;
+  await database`
+    select private.process_capacity_command(command.id)
+    from private.operation_capacity_commands as command
+    where command.operation_id = ${operationId}::uuid
+      and command.command_type = 'close_response_batch'
+      and command.payload ->> 'batch_id' = ${batchId}
+      and command.status = 'pending'
+  `;
 
   const delayed = await database<
     Array<{ delay_seconds: number; status: string }>
@@ -958,6 +979,23 @@ test("pausa manual bloqueia só proativo e preserva inbound já admitido", async
       ) as result
     `;
     expect(proactive[0]!.result.outcome).toBe("waiting");
+    await database.begin(async (sql) => {
+      await sql`
+        update private.operation_capacity_backlog
+        set status = 'cancelled', cancelled_at = now(), updated_at = now()
+        where conversation_id = ${proactiveConversationId}::uuid
+          and status = 'waiting'
+      `;
+      await sql`
+        update public.conversations
+        set
+          capacity_state = 'excluded',
+          capacity_state_changed_at = now(),
+          updated_at = now(),
+          version = version + 1
+        where id = ${proactiveConversationId}::uuid
+      `;
+    });
   } finally {
     const resumed = await owner.rpc("set_operation_proactive_pause", {
       paused: false,
@@ -1082,7 +1120,7 @@ test("close concorrente com claim respeita a ordem global sem deadlock", async (
       'close_response_batch',
       jsonb_build_object(
         'batch_id', ${batchId}::uuid,
-        'batch_version', ${versions[0]!.version}
+        'batch_version', ${versions[0]!.version}::bigint
       ),
       ${effectKey},
       now(),
@@ -1608,19 +1646,6 @@ test("backlog diferido usa clock atual, aplica backoff e comando failed rearma",
     set proactive_open_minute = 0, proactive_close_minute = 1440
     where operation_id = ${operationId}::uuid
   `;
-  const backlog = await database<Array<{ id: string }>>`
-    select (private.capacity_enqueue_waiting(
-      ${organizationId}::uuid,
-      ${operationId}::uuid,
-      ${conversationId}::uuid,
-      null,
-      'campaign',
-      now(),
-      now(),
-      ${randomUUID()}::uuid,
-      ${randomUUID()}::uuid
-    )).id
-  `;
   const pause = await owner.rpc("set_operation_proactive_pause", {
     paused: true,
     request_correlation_id: randomUUID(),
@@ -1630,42 +1655,102 @@ test("backlog diferido usa clock atual, aplica backoff e comando failed rearma",
   });
   expect(pause.error).toBeNull();
 
-  const commandKey = `t07-test-drain:${backlog[0]!.id}`;
-  await database`
-    select private.enqueue_capacity_command(
-      ${organizationId}::uuid,
-      ${operationId}::uuid,
-      null,
-      ${conversationId}::uuid,
-      ${backlog[0]!.id}::uuid,
-      'drain_backlog',
-      jsonb_build_object(
-        'backlog_id', ${backlog[0]!.id}::uuid,
-        'conversation_id', ${conversationId}::uuid,
-        'backlog_kind', 'campaign',
-        'observed_at', '2026-07-31T00:00:00Z'::timestamptz
-      ),
-      ${commandKey},
-      now(),
-      ${randomUUID()}::uuid,
-      ${randomUUID()}::uuid
-    )
-  `;
+  await database.begin(async (sql) => {
+    await sql`
+      select operation_id
+      from private.operation_capacity_state
+      where operation_id = ${operationId}::uuid
+      for update
+    `;
+    await sql`
+      with cancelled as (
+        update private.operation_capacity_backlog
+        set status = 'cancelled', cancelled_at = now(), updated_at = now()
+        where operation_id = ${operationId}::uuid
+          and status = 'waiting'
+        returning conversation_id
+      )
+      update public.conversations
+      set
+        capacity_state = 'excluded',
+        capacity_state_changed_at = now(),
+        updated_at = now(),
+        version = version + 1
+      where id in (select conversation_id from cancelled)
+    `;
+  });
+
+  let commandKey = "";
+  const backlog = await database.begin(async (sql) => {
+    const queued = await sql<
+      Array<{ id: string; operation_id: string; organization_id: string }>
+    >`
+      select queued.id, queued.organization_id, queued.operation_id
+      from private.capacity_enqueue_waiting(
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        ${conversationId}::uuid,
+        null,
+        'campaign',
+        now(),
+        now(),
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as queued
+    `;
+    await sql`
+      update public.conversations
+      set
+        capacity_state = 'waiting',
+        capacity_state_changed_at = now(),
+        updated_at = now(),
+        version = version + 1
+      where id = ${conversationId}::uuid
+    `;
+    commandKey = `t07-test-drain:${queued[0]!.id}`;
+    await sql`
+      select private.enqueue_capacity_command(
+        backlog.organization_id,
+        backlog.operation_id,
+        null,
+        backlog.conversation_id,
+        backlog.id,
+        'drain_backlog',
+        jsonb_build_object(
+          'backlog_id', backlog.id,
+          'conversation_id', backlog.conversation_id,
+          'backlog_kind', 'campaign',
+          'observed_at', '2026-07-31T00:00:00Z'::timestamptz
+        ),
+        ${commandKey},
+        now(),
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      )
+      from private.operation_capacity_backlog as backlog
+      where backlog.id = ${queued[0]!.id}::uuid
+    `;
+    return queued;
+  });
+  expect(backlog[0]).toMatchObject({
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
+  expect(backlog[0]!.id).toBeTruthy();
   const deferred = await database<
-    Array<{ result: { status: string }; run_at: string }>
+    Array<{ result: { status: string } }>
   >`
-    with processed as (
-      select private.process_capacity_command(command.id) as result
-      from private.operation_capacity_commands as command
-      where command.effect_key = ${commandKey}
-    )
-    select processed.result, command.run_at
-    from processed
-    join private.operation_capacity_commands as command
-      on command.effect_key = ${commandKey}
+    select private.process_capacity_command(command.id) as result
+    from private.operation_capacity_commands as command
+    where command.effect_key = ${commandKey}
+  `;
+  const deferredCommand = await database<Array<{ run_at: string }>>`
+    select run_at
+    from private.operation_capacity_commands
+    where effect_key = ${commandKey}
   `;
   expect(deferred[0]!.result.status).toBe("deferred");
-  expect(Date.parse(deferred[0]!.run_at)).toBeGreaterThan(Date.now());
+  expect(Date.parse(deferredCommand[0]!.run_at)).toBeGreaterThan(Date.now());
 
   const unpause = await owner.rpc("set_operation_proactive_pause", {
     paused: false,
@@ -1675,6 +1760,29 @@ test("backlog diferido usa clock atual, aplica backoff e comando failed rearma",
     target_reason: null,
   });
   expect(unpause.error).toBeNull();
+  await database.begin(async (sql) => {
+    await sql`
+      select operation_id
+      from private.operation_capacity_state
+      where operation_id = ${operationId}::uuid
+      for update
+    `;
+    await sql`
+      with removed as (
+        delete from private.conversation_capacity_slots
+        where operation_id = ${operationId}::uuid
+          and conversation_id <> ${conversationId}::uuid
+        returning conversation_id
+      )
+      update public.conversations
+      set
+        capacity_state = 'excluded',
+        capacity_state_changed_at = now(),
+        updated_at = now(),
+        version = version + 1
+      where id in (select conversation_id from removed)
+    `;
+  });
   await database`
     update private.operation_capacity_backlog
     set eligible_at = now()
@@ -1750,19 +1858,32 @@ test("backlog diferido usa clock atual, aplica backoff e comando failed rearma",
 
 test("alta demanda começa após dois minutos e termina após cooldown", async () => {
   const conversationId = await createConversation({ connection: true });
-  const backlog = await database<Array<{ id: string }>>`
-    select (private.capacity_enqueue_waiting(
-      ${organizationId}::uuid,
-      ${operationId}::uuid,
-      ${conversationId}::uuid,
-      null,
-      'new_inbound',
-      now() - interval '119 seconds',
-      now() + interval '1 day',
-      ${randomUUID()}::uuid,
-      ${randomUUID()}::uuid
-    )).id
-  `;
+  const backlog = await database.begin(async (sql) => {
+    const queued = await sql<Array<{ id: string }>>`
+      select queued.id
+      from private.capacity_enqueue_waiting(
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        ${conversationId}::uuid,
+        null,
+        'new_inbound',
+        now() - interval '119 seconds',
+        now() + interval '1 day',
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as queued
+    `;
+    await sql`
+      update public.conversations
+      set
+        capacity_state = 'waiting',
+        capacity_state_changed_at = now(),
+        updated_at = now(),
+        version = version + 1
+      where id = ${conversationId}::uuid
+    `;
+    return queued;
+  });
   const beforeThreshold = await database<
     Array<{ high_demand: boolean }>
   >`
@@ -1933,7 +2054,12 @@ test("loop de maintenance compacta histórico com limite explícito", async () =
     `;
     await sql`
       update public.scheduled_jobs
-      set status = 'completed', completed_at = now(), updated_at = now()
+      set
+        status = 'completed',
+        queue_message_id = 1,
+        published_at = now(),
+        completed_at = now(),
+        updated_at = now()
       where operation_id = ${compactOperationId}::uuid
         and job_type = 't07.capacity_maintenance'
     `;

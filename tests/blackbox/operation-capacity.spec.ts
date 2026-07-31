@@ -502,36 +502,17 @@ test("rejeita referências de mensagem, batch e revision entre tenants", async (
 
   const tenantA = await createTenantFixture("a");
   const tenantB = await createTenantFixture("b");
-  const batchId = randomUUID();
+  const batches = await database<Array<{ id: string }>>`
+    select id
+    from private.pedro_response_batches
+    where conversation_id = ${tenantA.conversationId}::uuid
+      and status in ('collecting', 'delaying', 'ready', 'processing', 'completed')
+    order by created_at desc, id
+    limit 1
+  `;
+  const batchId = batches[0]!.id;
 
   try {
-    await database`
-      insert into private.pedro_response_batches (
-        id,
-        organization_id,
-        operation_id,
-        conversation_id,
-        opened_at,
-        last_inbound_at,
-        grouping_due_at,
-        grouping_deadline_at,
-        trace_id,
-        correlation_id
-      )
-      values (
-        ${batchId}::uuid,
-        ${tenantA.organizationId}::uuid,
-        ${tenantA.operationId}::uuid,
-        ${tenantA.conversationId}::uuid,
-        now(),
-        now(),
-        now() + interval '10 seconds',
-        now() + interval '30 seconds',
-        gen_random_uuid(),
-        gen_random_uuid()
-      )
-    `;
-
     await expect(
       database`
         insert into private.operation_capacity_backlog (
