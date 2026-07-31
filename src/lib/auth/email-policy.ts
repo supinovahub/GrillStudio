@@ -12,5 +12,9 @@ export function isPreviewAuthEmailAllowed(
     .map((candidate) => candidate.trim().toLowerCase())
     .filter((candidate) => candidate.includes("@"));
 
-  return allowlist.includes(normalizedEmail);
+  return allowlist.some((candidate) =>
+    candidate.startsWith("@")
+      ? normalizedEmail.endsWith(candidate)
+      : candidate === normalizedEmail,
+  );
 }

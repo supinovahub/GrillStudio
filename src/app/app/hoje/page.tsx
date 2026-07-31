@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { BrandMark } from "@/components/brand-mark";
-import { signOutCurrentAction } from "@/lib/auth/actions";
+import { AppShell } from "@/components/app-shell";
 import { getPreviewEnvironment } from "@/lib/environment";
 import { getMemberWorkspace } from "@/lib/operation/shell";
 
@@ -26,30 +24,26 @@ export default async function TodayPage() {
   }
 
   return (
-    <main className="centered-state" id="conteudo">
-      <section className="state-panel" aria-labelledby="today-title">
-        <BrandMark />
-        <p className="eyebrow">Hoje · Corretor</p>
-        <h1 id="today-title">{workspace.operation_name}</h1>
-        <p>
-          {workspace.organization_name}. A fila comercial será disponibilizada
-          em uma etapa posterior; esta entrega confirma somente o acesso
-          isolado do Corretor.
-        </p>
-        <p>
-          <strong>{environment.label}</strong>
-          <br />
-          Dados sintéticos · sem egressos reais
-        </p>
-        <form action={signOutCurrentAction}>
-          <button className="button button-secondary" type="submit">
-            Sair deste dispositivo
-          </button>
-        </form>
-        <Link className="back-link" href="/sem-permissao">
-          Entenda as permissões da Central
-        </Link>
-      </section>
-    </main>
+    <AppShell activePath="/app/hoje" environment={environment} workspace={workspace}>
+      <main className="central" id="conteudo">
+        <section className="central-heading">
+          <div>
+            <p className="eyebrow">Hoje · Corretor</p>
+            <h1>{workspace.operation_name}</h1>
+            <p>
+              {workspace.organization_name}. A fila comercial será
+              disponibilizada em uma etapa posterior; esta entrega confirma
+              somente o acesso isolado do Corretor.
+            </p>
+          </div>
+          <div className="environment-card">
+            <span className="environment-kicker">Ambiente atual</span>
+            <strong>{environment.label}</strong>
+            <span>{environment.branchName}</span>
+            <small>Dados sintéticos · sem egressos reais</small>
+          </div>
+        </section>
+      </main>
+    </AppShell>
   );
 }

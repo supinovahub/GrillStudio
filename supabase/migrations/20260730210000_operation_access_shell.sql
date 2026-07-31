@@ -202,13 +202,63 @@ as $$
   );
 $$;
 
+create or replace function private.get_member_workspace()
+returns table (
+  organization_id uuid,
+  organization_name text,
+  operation_id uuid,
+  operation_name text,
+  member_role text,
+  production_enabled boolean,
+  global_pause boolean
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    organization.id,
+    organization.name,
+    operation.id,
+    operation.name,
+    membership.role,
+    settings.production_enabled,
+    exists (
+      select 1
+      from public.system_pauses as pause
+      where pause.operation_id = operation.id
+        and pause.status = 'active'
+    )
+  from public.memberships as membership
+  join public.membership_operations as membership_operation
+    on membership_operation.membership_id = membership.id
+    and membership_operation.organization_id = membership.organization_id
+  join public.organizations as organization
+    on organization.id = membership.organization_id
+  join public.operations as operation
+    on operation.id = membership_operation.operation_id
+    and operation.organization_id = membership.organization_id
+  join public.operation_settings as settings
+    on settings.operation_id = operation.id
+    and settings.organization_id = membership.organization_id
+  where membership.user_id = auth.uid()
+    and membership.status = 'active'
+    and organization.status = 'active'
+    and operation.status = 'active'
+  order by operation.is_default desc, operation.created_at asc
+  limit 1;
+$$;
+
 revoke all on function private.has_active_membership(uuid) from public;
 revoke all on function private.has_operation_access(uuid) from public;
 revoke all on function private.has_operation_role(uuid, text[]) from public;
+revoke all on function private.get_member_workspace() from public;
 grant usage on schema private to authenticated;
 grant execute on function private.has_active_membership(uuid) to authenticated;
 grant execute on function private.has_operation_access(uuid) to authenticated;
 grant execute on function private.has_operation_role(uuid, text[]) to authenticated;
+grant execute on function private.get_member_workspace() to authenticated;
 
 create policy organizations_select_active_members
   on public.organizations
@@ -281,38 +331,16 @@ security invoker
 set search_path = ''
 as $$
   select
-    organization.id,
-    organization.name,
-    operation.id,
-    operation.name,
-    membership.role,
-    settings.production_enabled,
-    exists (
-      select 1
-      from public.system_pauses as pause
-      where pause.operation_id = operation.id
-        and pause.status = 'active'
-    ),
-    membership.role in ('owner', 'manager')
-  from public.memberships as membership
-  join public.membership_operations as membership_operation
-    on membership_operation.membership_id = membership.id
-    and membership_operation.organization_id = membership.organization_id
-  join public.organizations as organization
-    on organization.id = membership.organization_id
-  join public.operations as operation
-    on operation.id = membership_operation.operation_id
-    and operation.organization_id = membership.organization_id
-  join public.operation_settings as settings
-    on settings.operation_id = operation.id
-    and settings.organization_id = membership.organization_id
-  where membership.user_id = auth.uid()
-    and membership.status = 'active'
-    and membership.role in ('owner', 'manager')
-    and organization.status = 'active'
-    and operation.status = 'active'
-  order by operation.is_default desc, operation.created_at asc
-  limit 1;
+    workspace.organization_id,
+    workspace.organization_name,
+    workspace.operation_id,
+    workspace.operation_name,
+    workspace.member_role,
+    workspace.production_enabled,
+    workspace.global_pause,
+    true
+  from private.get_member_workspace() as workspace
+  where workspace.member_role in ('owner', 'manager');
 $$;
 
 revoke all on function public.get_operation_shell() from public;
@@ -324,34 +352,16 @@ returns table (
   organization_name text,
   operation_id uuid,
   operation_name text,
-  member_role text
+  member_role text,
+  production_enabled boolean,
+  global_pause boolean
 )
 language sql
 stable
 security invoker
 set search_path = ''
 as $$
-  select
-    organization.id,
-    organization.name,
-    operation.id,
-    operation.name,
-    membership.role
-  from public.memberships as membership
-  join public.membership_operations as membership_operation
-    on membership_operation.membership_id = membership.id
-    and membership_operation.organization_id = membership.organization_id
-  join public.organizations as organization
-    on organization.id = membership.organization_id
-  join public.operations as operation
-    on operation.id = membership_operation.operation_id
-    and operation.organization_id = membership.organization_id
-  where membership.user_id = auth.uid()
-    and membership.status = 'active'
-    and organization.status = 'active'
-    and operation.status = 'active'
-  order by operation.is_default desc, operation.created_at asc
-  limit 1;
+  select * from private.get_member_workspace();
 $$;
 
 revoke all on function public.get_member_workspace() from public;

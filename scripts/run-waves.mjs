@@ -314,6 +314,7 @@ function resolvePreviewEnvironment(worktree, branch, prNumber) {
       ".orchestrator",
       "playwright",
     ),
+    PREVIEW_AUTH_EMAIL_ALLOWLIST: "@example.com",
     SUPABASE_ANON_KEY: publicKey,
     SUPABASE_BRANCH_NAME: branch,
     SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
@@ -333,6 +334,40 @@ function packageHasScript(worktree, script, environment) {
     { cwd: worktree, env: environment, stdio: "ignore" },
   );
   return result.status === 0;
+}
+
+function verifyPreviewDatabase(worktree, environment) {
+  const databaseUrl = environment.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("Preview Branch database URL is required for lint");
+  }
+
+  const result = spawnSync(
+    "pnpm",
+    [
+      "dlx",
+      `supabase@${SUPABASE_CLI_VERSION}`,
+      "db",
+      "lint",
+      "--db-url",
+      databaseUrl,
+      "--schema",
+      "public,private,audit",
+      "--level",
+      "warning",
+      "--fail-on",
+      "error",
+    ],
+    {
+      cwd: worktree,
+      env: environment,
+      stdio: "inherit",
+    },
+  );
+
+  if (result.status !== 0) {
+    throw new Error("Supabase Preview database lint failed");
+  }
 }
 
 function verifyImplementation(worktree, environment) {
@@ -366,6 +401,7 @@ function verifyImplementation(worktree, environment) {
       run("pnpm", [script], { cwd: worktree, env: environment });
     }
   }
+  verifyPreviewDatabase(worktree, environment);
   if (packageHasScript(worktree, "test:blackbox", environment)) {
     run("pnpm", ["exec", "playwright", "install", "chromium"], {
       cwd: worktree,

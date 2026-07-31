@@ -12,6 +12,15 @@ describe("Preview Auth email allowlist", () => {
     ).toBe(true);
   });
 
+  it("allows a deliberately scoped synthetic domain", () => {
+    expect(
+      isPreviewAuthEmailAllowed("owner-123@example.com", "@example.com"),
+    ).toBe(true);
+    expect(
+      isPreviewAuthEmailAllowed("owner-123@notexample.com", "@example.com"),
+    ).toBe(false);
+  });
+
   it.each([
     ["dono@example.com", undefined],
     ["dono@example.com", ""],

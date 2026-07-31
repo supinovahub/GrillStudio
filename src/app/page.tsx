@@ -1,13 +1,15 @@
 import { redirect } from "next/navigation";
 
-import { getActiveMemberRole } from "@/lib/operation/membership";
+import { getMemberWorkspace } from "@/lib/operation/shell";
 
 export default async function HomePage() {
-  const role = await getActiveMemberRole();
+  const workspace = await getMemberWorkspace();
 
-  if (!role) {
+  if (!workspace) {
     redirect("/entrar");
   }
 
-  redirect(role === "broker" ? "/app/hoje" : "/app/central");
+  redirect(
+    workspace.member_role === "broker" ? "/app/hoje" : "/app/central",
+  );
 }

@@ -19,11 +19,13 @@ export type OperationShell = {
 
 export type MemberWorkspace = Pick<
   OperationShell,
+  | "global_pause"
   | "member_role"
   | "operation_id"
   | "operation_name"
   | "organization_id"
   | "organization_name"
+  | "production_enabled"
 >;
 
 type OrganizationRow = {

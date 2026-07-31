@@ -7,6 +7,10 @@ export async function proxy(request: NextRequest) {
   const context = createRequestContext();
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-correlation-id", context.correlationId);
+  requestHeaders.set(
+    "x-request-path",
+    `${request.nextUrl.pathname}${request.nextUrl.search}`,
+  );
   requestHeaders.set("x-trace-id", context.traceId);
 
   const response = await updateSession(request, requestHeaders);
