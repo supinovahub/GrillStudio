@@ -11,6 +11,8 @@ let database: Sql;
 let organizationId = "";
 let operationId = "";
 let connectionId = "";
+let ownerMembershipId = "";
+let ownerUserId = "";
 
 test.describe.configure({ mode: "serial" });
 
@@ -56,6 +58,90 @@ async function drain(maximumMessages = 100) {
   expect(result.error).toBeNull();
 }
 
+async function createReplayFenceFixture(label: string) {
+  await database`select pgmq.purge_queue('inbound_whatsapp')`;
+  const chatId = `replay-fence-${label}-${suffix}`;
+  const firstMessageId = `replay-fence-${label}-n-${suffix}`;
+  const secondMessageId = `replay-fence-${label}-n1-${suffix}`;
+  const first = await accept(event(firstMessageId, chatId, 1));
+  const second = await accept(event(secondMessageId, chatId, 2));
+  expect(first.error).toBeNull();
+  expect(second.error).toBeNull();
+
+  return database.begin(async (sql) => {
+    const inboxes = await sql<
+      Array<{
+        correlation_id: string;
+        id: string;
+        organization_id: string;
+        provider_event_id: string;
+        queue_message_id: number;
+        stream_key: string;
+        stream_sequence: number;
+        trace_id: string;
+      }>
+    >`
+      select
+        id,
+        organization_id,
+        provider_event_id,
+        queue_message_id,
+        stream_key,
+        stream_sequence,
+        trace_id,
+        correlation_id
+      from private.webhook_inbox
+      where connection_id = ${connectionId}::uuid
+        and provider_event_id in (${firstMessageId}, ${secondMessageId})
+      order by stream_sequence
+      for update
+    `;
+    const oldInbox = inboxes[0]!;
+    const envelope = {
+      correlation_id: oldInbox.correlation_id,
+      inbox_id: oldInbox.id,
+      operation_id: operationId,
+      organization_id: oldInbox.organization_id,
+      stream_key: oldInbox.stream_key,
+      stream_sequence: Number(oldInbox.stream_sequence),
+      trace_id: oldInbox.trace_id,
+    };
+    const letters = await sql<Array<{ id: string }>>`
+      select private.dead_letter_queue_message(
+        'inbound_whatsapp',
+        ${oldInbox.queue_message_id},
+        ${oldInbox.id}::uuid,
+        ${`webhook:${connectionId}:${oldInbox.provider_event_id}`},
+        ${sql.json(envelope)}::jsonb,
+        1,
+        'non_retryable',
+        'synthetic_replay_fence',
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        ${oldInbox.trace_id}::uuid,
+        ${oldInbox.correlation_id}::uuid
+      ) as id
+    `;
+    await sql`
+      update private.webhook_inbox
+      set
+        status = 'dead',
+        attempts = 1,
+        last_error_class = 'non_retryable',
+        last_error_code = 'synthetic_replay_fence',
+        updated_at = now()
+      where id = ${oldInbox.id}::uuid
+    `;
+    return {
+      deadLetterId: letters[0]!.id,
+      firstInboxId: oldInbox.id,
+      firstMessageId,
+      secondInboxId: inboxes[1]!.id,
+      secondMessageId,
+    };
+  });
+}
+
 test.beforeAll(async () => {
   const environment = validatePreviewEnvironment({
     appEnvironment: process.env.APP_ENVIRONMENT,
@@ -99,6 +185,30 @@ test.beforeAll(async () => {
     organization_id: organizationId,
   });
   expect(insertedSettings.error).toBeNull();
+  const createdOwner = await admin.auth.admin.createUser({
+    email: `t06-owner-${suffix}@example.com`,
+    email_confirm: true,
+    password: `T06-${suffix}-synthetic-password`,
+  });
+  expect(createdOwner.error).toBeNull();
+  ownerUserId = createdOwner.data.user!.id;
+  ownerMembershipId = randomUUID();
+  const insertedOwner = await admin.from("memberships").insert({
+    id: ownerMembershipId,
+    organization_id: organizationId,
+    role: "owner",
+    status: "active",
+    user_id: ownerUserId,
+  });
+  expect(insertedOwner.error).toBeNull();
+  const insertedOwnerOperation = await admin
+    .from("membership_operations")
+    .insert({
+      membership_id: ownerMembershipId,
+      operation_id: operationId,
+      organization_id: organizationId,
+    });
+  expect(insertedOwnerOperation.error).toBeNull();
   const insertedConnection = await admin.from("whatsapp_connections").insert({
     adapter_type: "simulator",
     display_name: "T06 Synthetic",
@@ -113,6 +223,9 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await database?.end();
+  if (ownerUserId) {
+    await admin?.auth.admin.deleteUser(ownerUserId);
+  }
 });
 
 test("dez webhooks iguais produzem um efeito e raw divergente conflita", async () => {
@@ -161,6 +274,13 @@ test("dez webhooks iguais produzem um efeito e raw divergente conflita", async (
 test("dois consumidores preservam a ordem canônica de cem mensagens", async () => {
   const chatId = `ordered-${suffix}`;
   const accepted = [];
+  let accepting = true;
+  const concurrentWorker = (async () => {
+    while (accepting) {
+      await drain(100);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  })();
   for (let index = 0; index < 100; index += 1) {
     accepted.push(
       await accept(
@@ -172,7 +292,16 @@ test("dois consumidores preservam a ordem canônica de cem mensagens", async () 
       ),
     );
   }
-  expect(accepted.every((result) => !result.error)).toBe(true);
+  accepting = false;
+  await concurrentWorker;
+  expect(
+    accepted
+      .filter((result) => result.error)
+      .map((result) => ({
+        code: result.error!.code,
+        message: result.error!.message,
+      })),
+  ).toEqual([]);
 
   await Promise.all([drain(100), drain(100)]);
   const order = await database<
@@ -406,6 +535,216 @@ test("redelivery físico concorrente adia sem deadlock nem consumir tentativas",
     messages: 1,
     queued: 0,
   });
+});
+
+test("replay N vence, adia N+1 e preserva ordem N,N+1", async () => {
+  const fixture = await createReplayFenceFixture("replay-wins");
+  let releaseReplay!: () => void;
+  let replayReached!: () => void;
+  const release = new Promise<void>((resolve) => {
+    releaseReplay = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    replayReached = resolve;
+  });
+  const replay = database.begin(async (sql) => {
+    await sql`set local statement_timeout = '5s'`;
+    await sql`set local lock_timeout = '4s'`;
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        jsonb_build_object(
+          'role',
+          'authenticated',
+          'sub',
+          ${ownerUserId}::text
+        )::text,
+        true
+      )
+    `;
+    const result = await sql<Array<{ result: { status: string } }>>`
+      select public.replay_dead_letter(
+        ${fixture.deadLetterId}::uuid,
+        gen_random_uuid(),
+        gen_random_uuid()
+      ) as result
+    `;
+    replayReached();
+    await release;
+    return result[0]!.result;
+  });
+  await reached;
+
+  const worker = await database.begin(async (sql) => {
+    await sql`set local statement_timeout = '5s'`;
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        '{"role":"service_role"}',
+        true
+      )
+    `;
+    const result = await sql<
+      Array<{
+        result: {
+          dead_lettered: number;
+          deferred: number;
+          processed: number;
+        };
+      }>
+    >`
+      select private.consume_inbound_whatsapp(
+        1,
+        gen_random_uuid(),
+        5
+      ) as result
+    `;
+    return result[0]!.result;
+  });
+  expect(worker).toEqual(
+    expect.objectContaining({
+      dead_lettered: 0,
+      deferred: 1,
+      processed: 0,
+    }),
+  );
+  releaseReplay();
+  expect(await replay).toEqual(expect.objectContaining({ status: "replayed" }));
+
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      queued.msg_id,
+      0
+    )
+    from pgmq.q_inbound_whatsapp as queued
+    where queued.message ->> 'inbox_id' in (
+      ${fixture.firstInboxId},
+      ${fixture.secondInboxId}
+    )
+  `;
+  await drain(10);
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      queued.msg_id,
+      0
+    )
+    from pgmq.q_inbound_whatsapp as queued
+    where queued.message ->> 'inbox_id' in (
+      ${fixture.firstInboxId},
+      ${fixture.secondInboxId}
+    )
+  `;
+  await drain(10);
+
+  const order = await database<Array<{ provider_message_id: string }>>`
+    select provider_message_id
+    from public.messages
+    where connection_id = ${connectionId}::uuid
+      and provider_message_id in (
+        ${fixture.firstMessageId},
+        ${fixture.secondMessageId}
+      )
+    order by inbound_stream_sequence
+  `;
+  expect(order.map((message) => message.provider_message_id)).toEqual([
+    fixture.firstMessageId,
+    fixture.secondMessageId,
+  ]);
+});
+
+test("worker N+1 vence e replay N espera antes de rejeitar stale", async () => {
+  const fixture = await createReplayFenceFixture("worker-wins");
+  let releaseWorker!: () => void;
+  let workerReached!: () => void;
+  const release = new Promise<void>((resolve) => {
+    releaseWorker = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    workerReached = resolve;
+  });
+  const worker = database.begin(async (sql) => {
+    await sql`set local statement_timeout = '5s'`;
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        '{"role":"service_role"}',
+        true
+      )
+    `;
+    const result = await sql<
+      Array<{ result: { dead_lettered: number; processed: number } }>
+    >`
+      select private.consume_inbound_whatsapp(
+        1,
+        gen_random_uuid(),
+        5
+      ) as result
+    `;
+    workerReached();
+    await release;
+    return result[0]!.result;
+  });
+  await reached;
+
+  let replaySettled = false;
+  const replay = database
+    .begin(async (sql) => {
+      await sql`set local statement_timeout = '5s'`;
+      await sql`set local lock_timeout = '4s'`;
+      await sql`
+        select set_config(
+          'request.jwt.claims',
+          jsonb_build_object(
+            'role',
+            'authenticated',
+            'sub',
+            ${ownerUserId}::text
+          )::text,
+          true
+        )
+      `;
+      const result = await sql<
+        Array<{ result: { reason: string; status: string } }>
+      >`
+        select public.replay_dead_letter(
+          ${fixture.deadLetterId}::uuid,
+          gen_random_uuid(),
+          gen_random_uuid()
+        ) as result
+      `;
+      return result[0]!.result;
+    })
+    .finally(() => {
+      replaySettled = true;
+    });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(replaySettled).toBe(false);
+  releaseWorker();
+
+  expect(await worker).toEqual(
+    expect.objectContaining({ dead_lettered: 0, processed: 1 }),
+  );
+  expect(await replay).toEqual(
+    expect.objectContaining({
+      reason: "later_inbound_already_applied",
+      status: "rejected_stale",
+    }),
+  );
+  const messages = await database<Array<{ provider_message_id: string }>>`
+    select provider_message_id
+    from public.messages
+    where connection_id = ${connectionId}::uuid
+      and provider_message_id in (
+        ${fixture.firstMessageId},
+        ${fixture.secondMessageId}
+      )
+    order by inbound_stream_sequence
+  `;
+  expect(messages.map((message) => message.provider_message_id)).toEqual([
+    fixture.secondMessageId,
+  ]);
 });
 
 test("ação agendada conclui uma vez e redelivery reconcilia sem novo efeito", async () => {
@@ -905,6 +1244,477 @@ test("poison em reconciliation é limitado ao batch e não aborta o runner", asy
   });
 });
 
+test("reconciliation forjada não altera outbound vivo e o efeito ainda executa", async () => {
+  await database.begin(async (sql) => {
+    await sql`select pgmq.purge_queue('outbound_whatsapp')`;
+    await sql`select pgmq.purge_queue('reconciliation')`;
+    const conversations = await sql<
+      Array<{ id: string; version: number }>
+    >`
+      select id, version
+      from public.conversations
+      where connection_id = ${connectionId}::uuid
+      order by created_at
+      limit 1
+    `;
+    const conversation = conversations[0]!;
+    const messageId = randomUUID();
+    const commandId = randomUUID();
+    await sql`
+      insert into public.messages (
+        id,
+        organization_id,
+        operation_id,
+        conversation_id,
+        connection_id,
+        direction,
+        kind,
+        body,
+        status,
+        idempotency_key,
+        created_by_type,
+        created_by_membership_id
+      )
+      values (
+        ${messageId}::uuid,
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        ${conversation.id}::uuid,
+        ${connectionId}::uuid,
+        'outbound',
+        'text',
+        'Synthetic outbound binding',
+        'queued',
+        ${commandId}::uuid,
+        'human',
+        ${ownerMembershipId}::uuid
+      )
+    `;
+    const events = await sql<Array<{ id: string }>>`
+      with next_sequence as (
+        select private.next_aggregate_sequence(
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          'conversation',
+          ${conversation.id}::uuid
+        ) as value
+      ),
+      payload as (
+        select jsonb_build_object(
+          'message_id',
+          ${messageId}::uuid,
+          'conversation_id',
+          ${conversation.id}::uuid,
+          'connection_id',
+          ${connectionId}::uuid
+        ) as value
+      )
+      insert into private.outbox_events (
+        organization_id,
+        operation_id,
+        event_type,
+        aggregate_type,
+        aggregate_id,
+        aggregate_version,
+        aggregate_sequence,
+        actor_type,
+        actor_reference,
+        target_queue,
+        idempotency_key,
+        payload_hash,
+        payload,
+        trace_id,
+        correlation_id
+      )
+      select
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        'message.send_requested.v1',
+        'conversation',
+        ${conversation.id}::uuid,
+        ${conversation.version},
+        next_sequence.value,
+        'user',
+        ${ownerMembershipId},
+        'outbound_whatsapp',
+        ${`binding:${commandId}`},
+        encode(
+          sha256(convert_to(payload.value::text, 'UTF8')),
+          'hex'
+        ),
+        payload.value,
+        gen_random_uuid(),
+        gen_random_uuid()
+      from next_sequence, payload
+      returning id
+    `;
+    const eventId = events[0]!.id;
+    await sql`select private.dispatch_outbox_events(100)`;
+    await sql`select private.consume_reconciliation_detailed(100)`;
+    const forged = await sql<Array<{ id: number }>>`
+      select pgmq.send(
+        'reconciliation',
+        jsonb_build_object('outbox_event_id', ${eventId}::uuid),
+        0
+      ) as id
+    `;
+    const consumed = await sql<
+      Array<{
+        result: {
+          dead_lettered: number;
+          processed: number;
+        };
+      }>
+    >`
+      select private.consume_reconciliation_detailed(1) as result
+    `;
+    expect(consumed[0]!.result).toEqual(
+      expect.objectContaining({
+        dead_lettered: 1,
+        processed: 0,
+      }),
+    );
+
+    const preserved = await sql<
+      Array<{
+        failure_code: string;
+        outbound_queued: number;
+        status: string;
+      }>
+    >`
+      select
+        event.status,
+        (
+          select count(*)::integer
+          from pgmq.q_outbound_whatsapp as queued
+          where queued.msg_id = event.queue_message_id
+        ) as outbound_queued,
+        (
+          select letter.failure_code
+          from private.dead_letters as letter
+          where letter.source_queue = 'reconciliation'
+            and letter.source_message_id = ${forged[0]!.id}
+        ) as failure_code
+      from private.outbox_events as event
+      where event.id = ${eventId}::uuid
+    `;
+    expect(preserved[0]).toEqual({
+      failure_code: "queue_binding_mismatch",
+      outbound_queued: 1,
+      status: "published",
+    });
+
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        '{"role":"service_role"}',
+        true
+      )
+    `;
+    await sql`
+      select private.consume_outbound_whatsapp(
+        1,
+        gen_random_uuid(),
+        30
+      )
+    `;
+    const completed = await sql<
+      Array<{ event_status: string; message_status: string }>
+    >`
+      select
+        event.status as event_status,
+        message.status as message_status
+      from private.outbox_events as event
+      join public.messages as message
+        on message.id::text = event.payload ->> 'message_id'
+      where event.id = ${eventId}::uuid
+    `;
+    expect(completed[0]).toEqual({
+      event_status: "completed",
+      message_status: "captured",
+    });
+  });
+});
+
+test("replay preserva DLQ quando efeito pode estar em voo", async () => {
+  await database.begin(async (sql) => {
+    await sql`select pgmq.purge_queue('outbound_whatsapp')`;
+    const conversations = await sql<
+      Array<{ id: string; version: number }>
+    >`
+      select id, version
+      from public.conversations
+      where connection_id = ${connectionId}::uuid
+      order by created_at
+      limit 1
+    `;
+    const conversation = conversations[0]!;
+    const fixtures: Array<{
+      deadLetterId: string;
+      eventId: string;
+      state: "outcome_unknown" | "request_started";
+    }> = [];
+
+    for (const effectState of [
+      "request_started",
+      "outcome_unknown",
+    ] as const) {
+      const messageId = randomUUID();
+      const commandId = randomUUID();
+      await sql`
+        insert into public.messages (
+          id,
+          organization_id,
+          operation_id,
+          conversation_id,
+          connection_id,
+          direction,
+          kind,
+          body,
+          status,
+          idempotency_key,
+          created_by_type,
+          created_by_membership_id
+        )
+        values (
+          ${messageId}::uuid,
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          ${conversation.id}::uuid,
+          ${connectionId}::uuid,
+          'outbound',
+          'text',
+          ${`Synthetic ${effectState}`},
+          'queued',
+          ${commandId}::uuid,
+          'human',
+          ${ownerMembershipId}::uuid
+        )
+      `;
+      const events = await sql<
+        Array<{
+          correlation_id: string;
+          id: string;
+          idempotency_key: string;
+          payload_hash: string;
+          queue_message_id: number;
+          trace_id: string;
+        }>
+      >`
+        with next_sequence as (
+          select private.next_aggregate_sequence(
+            ${organizationId}::uuid,
+            ${operationId}::uuid,
+            'conversation',
+            ${conversation.id}::uuid
+          ) as value
+        ),
+        payload as (
+          select jsonb_build_object(
+            'message_id',
+            ${messageId}::uuid,
+            'conversation_id',
+            ${conversation.id}::uuid,
+            'connection_id',
+            ${connectionId}::uuid
+          ) as value
+        ),
+        inserted as (
+          insert into private.outbox_events (
+            organization_id,
+            operation_id,
+            event_type,
+            aggregate_type,
+            aggregate_id,
+            aggregate_version,
+            aggregate_sequence,
+            actor_type,
+            actor_reference,
+            target_queue,
+            idempotency_key,
+            payload_hash,
+            payload,
+            trace_id,
+            correlation_id
+          )
+          select
+            ${organizationId}::uuid,
+            ${operationId}::uuid,
+            'message.send_requested.v1',
+            'conversation',
+            ${conversation.id}::uuid,
+            ${conversation.version},
+            next_sequence.value,
+            'user',
+            ${ownerMembershipId},
+            'outbound_whatsapp',
+            ${`uncertain:${effectState}:${commandId}`},
+            encode(
+              sha256(convert_to(payload.value::text, 'UTF8')),
+              'hex'
+            ),
+            payload.value,
+            gen_random_uuid(),
+            gen_random_uuid()
+          from next_sequence, payload
+          returning id
+        )
+        select
+          event.id,
+          event.idempotency_key,
+          event.payload_hash,
+          event.queue_message_id,
+          event.trace_id,
+          event.correlation_id
+        from inserted
+        join private.outbox_events as event
+          on event.id = inserted.id
+      `;
+      const event = events[0]!;
+      await sql`select private.dispatch_outbox_events(100)`;
+      const published = await sql<
+        Array<{
+          correlation_id: string;
+          idempotency_key: string;
+          payload_hash: string;
+          queue_message_id: number;
+          trace_id: string;
+        }>
+      >`
+        select
+          idempotency_key,
+          payload_hash,
+          queue_message_id,
+          trace_id,
+          correlation_id
+        from private.outbox_events
+        where id = ${event.id}::uuid
+      `;
+      const current = published[0]!;
+      await sql`
+        insert into private.effect_ledger (
+          organization_id,
+          operation_id,
+          effect_key,
+          effect_type,
+          request_hash,
+          state,
+          trace_id,
+          correlation_id,
+          started_at
+        )
+        values (
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          ${current.idempotency_key},
+          'message.send_requested.v1',
+          ${current.payload_hash},
+          ${effectState},
+          ${current.trace_id}::uuid,
+          ${current.correlation_id}::uuid,
+          now()
+        )
+      `;
+      const letters = await sql<Array<{ id: string }>>`
+        select private.dead_letter_queue_message(
+          'outbound_whatsapp',
+          ${current.queue_message_id},
+          ${event.id}::uuid,
+          ${current.idempotency_key},
+          (
+            select queued.message
+            from pgmq.q_outbound_whatsapp as queued
+            where queued.msg_id = ${current.queue_message_id}
+          ),
+          1,
+          'unknown',
+          ${`synthetic_${effectState}`},
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          ${current.trace_id}::uuid,
+          ${current.correlation_id}::uuid
+        ) as id
+      `;
+      await sql`
+        update private.outbox_events
+        set
+          status = 'dead',
+          attempts = 1,
+          last_error_class = 'unknown',
+          last_error_code = ${`synthetic_${effectState}`},
+          updated_at = now()
+        where id = ${event.id}::uuid
+      `;
+      fixtures.push({
+        deadLetterId: letters[0]!.id,
+        eventId: event.id,
+        state: effectState,
+      });
+    }
+
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        jsonb_build_object(
+          'role',
+          'authenticated',
+          'sub',
+          ${ownerUserId}::text
+        )::text,
+        true
+      )
+    `;
+    for (const fixture of fixtures) {
+      const replayed = await sql<
+        Array<{ result: { reason: string; status: string } }>
+      >`
+        select public.replay_dead_letter(
+          ${fixture.deadLetterId}::uuid,
+          gen_random_uuid(),
+          gen_random_uuid()
+        ) as result
+      `;
+      expect(replayed[0]!.result).toEqual(
+        expect.objectContaining({
+          reason: "effect_outcome_requires_reconciliation",
+          status: "rejected_outcome_unknown",
+        }),
+      );
+      const preserved = await sql<
+        Array<{
+          alert_status: string;
+          event_status: string;
+          letter_status: string;
+          queued: number;
+        }>
+      >`
+        select
+          event.status as event_status,
+          letter.status as letter_status,
+          alert.status as alert_status,
+          (
+            select count(*)::integer
+            from pgmq.q_outbound_whatsapp as queued
+            where queued.message ->> 'outbox_event_id' = event.id::text
+          ) as queued
+        from private.outbox_events as event
+        join private.dead_letters as letter
+          on letter.envelope_id = event.id
+        join private.durable_processing_alerts as alert
+          on alert.dead_letter_id = letter.id
+        where event.id = ${fixture.eventId}::uuid
+          and letter.id = ${fixture.deadLetterId}::uuid
+      `;
+      expect(preserved[0]).toEqual({
+        alert_status: "open",
+        event_status: "dead",
+        letter_status: "pending",
+        queued: 0,
+      });
+    }
+  });
+});
+
 test("retenção apaga todo payload terminal e preserva hashes canônicos", async () => {
   await database.begin(async (sql) => {
     const before = await sql<
@@ -972,38 +1782,223 @@ test("retenção apaga todo payload terminal e preserva hashes canônicos", asyn
   });
 });
 
-test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutura", async () => {
+test("payload expirado resolve DLQ e replay rejeita sem republicar", async () => {
+  const messageId = `payload-expiry-${suffix}`;
+  const accepted = await accept(event(messageId, `payload-expiry-${suffix}`));
+  expect(accepted.error).toBeNull();
+
   await database.begin(async (sql) => {
-    const archived = await sql<Array<{ msg_id: number }>>`
-      select pgmq.send(
-        'dead_letter'::text,
-        jsonb_build_object('probe', ${randomUUID()}::text),
-        0
-      ) as msg_id
+    const inboxes = await sql<
+      Array<{
+        correlation_id: string;
+        id: string;
+        organization_id: string;
+        queue_message_id: number;
+        stream_key: string;
+        stream_sequence: number;
+        trace_id: string;
+      }>
+    >`
+      select
+        id,
+        organization_id,
+        queue_message_id,
+        stream_key,
+        stream_sequence,
+        trace_id,
+        correlation_id
+      from private.webhook_inbox
+      where connection_id = ${connectionId}::uuid
+        and provider_event_id = ${messageId}
+      for update
     `;
-    const archivedMessageId = archived[0]!.msg_id;
+    const inbox = inboxes[0]!;
+    const envelope = {
+      correlation_id: inbox.correlation_id,
+      inbox_id: inbox.id,
+      operation_id: operationId,
+      organization_id: inbox.organization_id,
+      stream_key: inbox.stream_key,
+      stream_sequence: Number(inbox.stream_sequence),
+      trace_id: inbox.trace_id,
+    };
+    const letters = await sql<Array<{ id: string }>>`
+      select private.dead_letter_queue_message(
+        'inbound_whatsapp',
+        ${inbox.queue_message_id},
+        ${inbox.id}::uuid,
+        ${`webhook:${connectionId}:${messageId}`},
+        ${sql.json(envelope)}::jsonb,
+        1,
+        'non_retryable',
+        'synthetic_payload_expiry',
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        ${inbox.trace_id}::uuid,
+        ${inbox.correlation_id}::uuid
+      ) as id
+    `;
+    const deadLetterId = letters[0]!.id;
     await sql`
-      select pgmq.archive(
-        'dead_letter'::text,
-        ${archivedMessageId}::bigint
+      update private.webhook_inbox
+      set
+        status = 'dead',
+        attempts = 1,
+        processed_at = null,
+        last_error_class = 'non_retryable',
+        last_error_code = 'synthetic_payload_expiry',
+        updated_at = now() - interval '2 hours'
+      where id = ${inbox.id}::uuid
+    `;
+    await sql`
+      insert into private.durable_retention_policies (
+        organization_id,
+        operation_id,
+        webhook_raw_retention
+      )
+      values (
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        interval '1 hour'
+      )
+      on conflict (organization_id, operation_id)
+      do update set webhook_raw_retention = excluded.webhook_raw_retention
+    `;
+    const pruned = await sql<
+      Array<{
+        result: {
+          pending_replays_expired: number;
+          raw_webhooks_purged: number;
+        };
+      }>
+    >`
+      select private.prune_durable_sensitive_material(100) as result
+    `;
+    expect(pruned[0]!.result.pending_replays_expired).toBeGreaterThanOrEqual(1);
+    expect(pruned[0]!.result.raw_webhooks_purged).toBeGreaterThanOrEqual(1);
+
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        jsonb_build_object(
+          'role',
+          'authenticated',
+          'sub',
+          ${ownerUserId}::text
+        )::text,
+        true
       )
     `;
+    const replayed = await sql<
+      Array<{ result: { reason: string; status: string } }>
+    >`
+      select public.replay_dead_letter(
+        ${deadLetterId}::uuid,
+        gen_random_uuid(),
+        gen_random_uuid()
+      ) as result
+    `;
+    expect(replayed[0]!.result).toEqual(
+      expect.objectContaining({
+        reason: "payload_expired",
+        status: "rejected_expired",
+      }),
+    );
+
+    const state = await sql<
+      Array<{
+        alert_status: string;
+        letter_status: string;
+        normalized_payload: unknown;
+        queued: number;
+        resolution_reason: string;
+      }>
+    >`
+      select
+        inbox.normalized_payload,
+        letter.status as letter_status,
+        letter.resolution_reason,
+        alert.status as alert_status,
+        (
+          select count(*)::integer
+          from pgmq.q_inbound_whatsapp as queued
+          where queued.message ->> 'inbox_id' = inbox.id::text
+        ) as queued
+      from private.webhook_inbox as inbox
+      join private.dead_letters as letter
+        on letter.envelope_id = inbox.id
+      join private.durable_processing_alerts as alert
+        on alert.dead_letter_id = letter.id
+      where inbox.id = ${inbox.id}::uuid
+        and letter.id = ${deadLetterId}::uuid
+    `;
+    expect(state[0]).toEqual({
+      alert_status: "resolved",
+      letter_status: "resolved",
+      normalized_payload: {},
+      queued: 0,
+      resolution_reason: "payload_expired",
+    });
+  });
+});
+
+test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutura", async () => {
+  await database.begin(async (sql) => {
     await sql`
-      update pgmq.a_dead_letter
-      set archived_at = now() - interval '8 days'
-      where msg_id = ${archivedMessageId}
+      do $probe$
+      declare
+        queue_name text;
+        archived_message_id bigint;
+      begin
+        foreach queue_name in array array[
+          'inbound_whatsapp',
+          'outbound_whatsapp',
+          'scheduled_actions',
+          'reconciliation',
+          'dead_letter'
+        ]
+        loop
+          archived_message_id := pgmq.send(
+            queue_name,
+            jsonb_build_object('probe', gen_random_uuid()),
+            0
+          );
+          perform pgmq.archive(queue_name, archived_message_id);
+          execute format(
+            'update pgmq.%I set archived_at = now() - interval '
+              || '''8 days'' where msg_id = $1',
+            'a_' || queue_name
+          )
+          using archived_message_id;
+        end loop;
+      end
+      $probe$
     `;
     const archivePrune = await sql<
-      Array<{ result: { a_dead_letter: number; total: number } }>
+      Array<{
+        result: {
+          a_dead_letter: number;
+          a_inbound_whatsapp: number;
+          a_outbound_whatsapp: number;
+          a_reconciliation: number;
+          a_scheduled_actions: number;
+          total: number;
+        };
+      }>
     >`
       select private.prune_t06_queue_archives(
         interval '7 days',
-        10
+        5
       ) as result
     `;
-    expect(archivePrune[0]!.result).toEqual(
-      expect.objectContaining({ a_dead_letter: 1, total: 1 }),
-    );
+    expect(archivePrune[0]!.result).toEqual({
+      a_dead_letter: 1,
+      a_inbound_whatsapp: 1,
+      a_outbound_whatsapp: 1,
+      a_reconciliation: 1,
+      a_scheduled_actions: 1,
+      total: 5,
+    });
 
     const deadLetterId = randomUUID();
     const alertId = randomUUID();
@@ -1071,6 +2066,17 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
         true
       )
     `;
+    await sql.savepoint(async (savepoint) => {
+      await expect(
+        savepoint`
+          select public.resolve_infrastructure_durable_alert(
+            ${alertId}::uuid,
+            null,
+            ${correlationId}::uuid
+          )
+        `,
+      ).rejects.toMatchObject({ code: "22023" });
+    });
     const resolved = await sql<Array<{ result: { status: string } }>>`
       select public.resolve_infrastructure_durable_alert(
         ${alertId}::uuid,
@@ -1087,6 +2093,7 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
         resolution_correlation_id: string;
         resolution_source: string;
         resolution_trace_id: string;
+        service_audits: number;
       }>
     >`
       select
@@ -1094,7 +2101,14 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
         alert.resolution_source,
         alert.resolution_trace_id,
         alert.resolution_correlation_id,
-        letter.status as dead_letter_status
+        letter.status as dead_letter_status,
+        (
+          select count(*)::integer
+          from private.infrastructure_durable_alert_resolutions as audit
+          where audit.alert_id = alert.id
+            and audit.resolution_trace_id = ${traceId}::uuid
+            and audit.resolution_correlation_id = ${correlationId}::uuid
+        ) as service_audits
       from private.durable_processing_alerts as alert
       join private.dead_letters as letter
         on letter.id = alert.dead_letter_id
@@ -1106,6 +2120,7 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
       resolution_correlation_id: correlationId,
       resolution_source: "service_role",
       resolution_trace_id: traceId,
+      service_audits: 1,
     });
   });
 });
