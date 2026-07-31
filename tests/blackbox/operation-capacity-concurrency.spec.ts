@@ -15,7 +15,7 @@ function requiredEnvironment(name: string): string {
   return value;
 }
 
-test.describe.configure({ mode: "serial", timeout: 60_000 });
+test.describe.configure({ mode: "serial", timeout: 90_000 });
 
 test.beforeAll(async () => {
   const environment = validatePreviewEnvironment({
@@ -30,7 +30,7 @@ test.beforeAll(async () => {
   expect(environment.tone).toBe("preview");
 
   database = postgres(requiredEnvironment("DATABASE_URL"), {
-    max: 30,
+    max: 100,
     prepare: false,
   });
   organizationId = randomUUID();

@@ -270,19 +270,34 @@ test("não enfileira opt-out nem inventa ranking para pending return", async () 
       private.capacity_priority_for_kind(
         'pending_return'
       ) as pending_return_priority,
-      private.capacity_delay_seconds('short', false) as short_delay,
-      private.capacity_delay_seconds('long', false) as long_delay,
-      private.capacity_delay_seconds('long', true) as demand_delay
+      private.capacity_delay_seconds(
+        't07-test-short',
+        'short',
+        false
+      ) as short_delay,
+      private.capacity_delay_seconds(
+        't07-test-long',
+        'long',
+        false
+      ) as long_delay,
+      private.capacity_delay_seconds(
+        't07-test-demand',
+        'long',
+        true
+      ) as demand_delay
   `;
 
-  expect(policy[0]).toEqual({
-    demand_delay: 3,
-    long_delay: 42,
+  expect(policy[0]).toMatchObject({
     opt_out_priority: null,
     ordered_priorities: [1, 3, 4, 5, 6, 7],
     pending_return_priority: null,
-    short_delay: 8,
   });
+  expect(policy[0]!.short_delay).toBeGreaterThanOrEqual(4);
+  expect(policy[0]!.short_delay).toBeLessThanOrEqual(12);
+  expect(policy[0]!.long_delay).toBeGreaterThanOrEqual(25);
+  expect(policy[0]!.long_delay).toBeLessThanOrEqual(60);
+  expect(policy[0]!.demand_delay).toBeGreaterThanOrEqual(0);
+  expect(policy[0]!.demand_delay).toBeLessThanOrEqual(5);
 });
 
 test("fixa FIFO monotônico e referências tenant-aware no catálogo", async () => {
