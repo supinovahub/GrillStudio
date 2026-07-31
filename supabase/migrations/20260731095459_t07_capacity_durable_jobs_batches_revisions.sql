@@ -30,6 +30,9 @@ alter table private.operation_capacity_backlog
     foreign key (admitted_effect_id)
     references private.operation_capacity_effects(id);
 
+alter table private.operation_capacity_state
+  add column high_demand_recovery_since timestamptz;
+
 create table private.operation_capacity_commands (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null,
@@ -232,7 +235,11 @@ declare
   state_record private.operation_capacity_state%rowtype;
   active_count integer;
   delayed_inbound_exists boolean;
+  inbound_waiting_exists boolean;
   previous_automatic_paused boolean;
+  demand_triggered boolean;
+  recovery_since_value timestamptz;
+  high_demand_value boolean;
 begin
   select state.*
   into strict state_record
@@ -258,54 +265,89 @@ begin
         'active_reply',
         'new_inbound'
       )
+      and backlog.arrived_at <= observed_at - interval '2 minutes'
   )
   into delayed_inbound_exists;
+
+  select exists (
+    select 1
+    from private.operation_capacity_backlog as backlog
+    where backlog.operation_id = target_operation_id
+      and backlog.status = 'waiting'
+      and backlog.backlog_kind in (
+        'urgent_call',
+        'sleeping_return',
+        'active_reply',
+        'new_inbound'
+      )
+  )
+  into inbound_waiting_exists;
+
+  demand_triggered := active_count >= 25 or delayed_inbound_exists;
+  recovery_since_value := case
+    when demand_triggered or inbound_waiting_exists then null
+    when state_record.high_demand
+      then coalesce(state_record.high_demand_recovery_since, observed_at)
+    else null
+  end;
+  high_demand_value := demand_triggered
+    or (
+      state_record.high_demand
+      and (
+        recovery_since_value is null
+        or recovery_since_value > observed_at - interval '5 minutes'
+      )
+    );
 
   update private.operation_capacity_state
   set
     automatic_proactive_paused = case
-      when active_count >= 25 then true
+      when demand_triggered then true
       when automatic_proactive_paused
         and active_count < 10
         and below_ten_since is not null
         and below_ten_since <= observed_at - interval '5 minutes'
         and not delayed_inbound_exists
+        and not high_demand_value
         then false
       else automatic_proactive_paused
     end,
     automatic_pause_reason = case
-      when active_count >= 25 then 'high_demand'
+      when demand_triggered then 'high_demand'
       when automatic_proactive_paused
         and active_count < 10
         and below_ten_since is not null
         and below_ten_since <= observed_at - interval '5 minutes'
         and not delayed_inbound_exists
+        and not high_demand_value
         then null
       else automatic_pause_reason
     end,
     automatic_paused_at = case
-      when active_count >= 25
+      when demand_triggered
         then coalesce(automatic_paused_at, observed_at)
       when automatic_proactive_paused
         and active_count < 10
         and below_ten_since is not null
         and below_ten_since <= observed_at - interval '5 minutes'
         and not delayed_inbound_exists
+        and not high_demand_value
         then null
       else automatic_paused_at
     end,
-    high_demand = active_count >= 25 or delayed_inbound_exists,
+    high_demand = high_demand_value,
     high_demand_since = case
-      when active_count >= 25 or delayed_inbound_exists
+      when high_demand_value
         then coalesce(high_demand_since, observed_at)
       else null
     end,
+    high_demand_recovery_since = recovery_since_value,
     below_ten_since = case
       when active_count < 10 then coalesce(below_ten_since, observed_at)
       else null
     end,
     inbound_backlog_clear_since = case
-      when delayed_inbound_exists then null
+      when inbound_waiting_exists then null
       else coalesce(inbound_backlog_clear_since, observed_at)
     end,
     updated_at = observed_at,
@@ -560,6 +602,22 @@ alter table private.pedro_response_batches
   add column processing_at timestamptz,
   add column completed_at timestamptz,
   add column consumed_at timestamptz,
+  add column processing_worker_id uuid,
+  add column processing_lease_token uuid,
+  add column processing_lease_until timestamptz,
+  add column processing_input_version bigint
+    check (
+      processing_input_version is null
+      or processing_input_version > 0
+    ),
+  add column processing_input_hash text
+    check (
+      processing_input_hash is null
+      or processing_input_hash ~ '^[0-9a-f]{64}$'
+    ),
+  add column processing_claim_count integer not null default 0
+    check (processing_claim_count >= 0),
+  add column superseded_by_batch_id uuid,
   add column response_effect_key text
     check (
       response_effect_key is null
@@ -622,6 +680,12 @@ alter table private.pedro_response_batches
         status = 'processing'
         and ready_at is not null
         and processing_at is not null
+        and processing_worker_id is not null
+        and processing_lease_token is not null
+        and processing_lease_until is not null
+        and processing_input_version is not null
+        and processing_input_hash is not null
+        and processing_claim_count > 0
         and completed_at is null
         and consumed_at is null
         and cancelled_at is null
@@ -630,6 +694,12 @@ alter table private.pedro_response_batches
         status = 'completed'
         and ready_at is not null
         and processing_at is not null
+        and processing_worker_id is not null
+        and processing_lease_token is not null
+        and processing_lease_until is not null
+        and processing_input_version is not null
+        and processing_input_hash is not null
+        and processing_claim_count > 0
         and completed_at is not null
         and consumed_at is null
         and cancelled_at is null
@@ -638,6 +708,12 @@ alter table private.pedro_response_batches
         status = 'consumed'
         and ready_at is not null
         and processing_at is not null
+        and processing_worker_id is not null
+        and processing_lease_token is not null
+        and processing_lease_until is not null
+        and processing_input_version is not null
+        and processing_input_hash is not null
+        and processing_claim_count > 0
         and completed_at is not null
         and consumed_at is not null
         and cancelled_at is null
@@ -647,7 +723,11 @@ alter table private.pedro_response_batches
         and consumed_at is null
         and cancelled_at is not null
       )
-    );
+    ),
+  add constraint pedro_response_batches_superseded_fkey
+    foreign key (superseded_by_batch_id)
+    references private.pedro_response_batches(id)
+    on delete set null;
 
 drop index private.pedro_response_batches_one_open_conversation;
 
@@ -668,6 +748,58 @@ create index pedro_response_batches_delay_due_idx
     id
   )
   where status = 'delaying';
+
+create index pedro_response_batches_worker_claim_idx
+  on private.pedro_response_batches (
+    operation_id,
+    status,
+    processing_lease_until,
+    ready_at,
+    id
+  )
+  where status in ('ready', 'processing', 'completed');
+
+alter table public.messages
+  add column provider_revision_occurred_at timestamptz,
+  add column provider_revision_event_id text
+    check (
+      provider_revision_event_id is null
+      or char_length(provider_revision_event_id) between 1 and 500
+    ),
+  add column provider_revision_kind text
+    check (
+      provider_revision_kind is null
+      or provider_revision_kind in ('edit', 'delete')
+    ),
+  add constraint messages_provider_revision_watermark_check
+    check (
+      (
+        provider_revision_occurred_at is null
+        and provider_revision_event_id is null
+        and provider_revision_kind is null
+      )
+      or (
+        provider_revision_occurred_at is not null
+        and provider_revision_event_id is not null
+        and provider_revision_kind is not null
+      )
+    );
+
+alter table private.provider_message_revisions
+  add column is_applied boolean not null default true,
+  add column stale_reason text
+    check (
+      stale_reason is null
+      or stale_reason in (
+        'older_provider_time',
+        'deleted_message_is_terminal'
+      )
+    ),
+  add constraint provider_message_revisions_application_check
+    check (
+      (is_applied and stale_reason is null)
+      or (not is_applied and stale_reason is not null)
+    );
 
 create or replace function private.schedule_t07_job(
   target_organization_id uuid,
@@ -735,6 +867,238 @@ revoke all on function private.schedule_t07_job(
   uuid, uuid, text, text, uuid, timestamptz, text, jsonb, uuid, uuid
 ) from public, anon, authenticated, service_role;
 
+create or replace function private.response_delay_class_for_message(
+  target_message_id uuid
+)
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select case
+    when message.kind in ('image', 'document', 'audio', 'video') then 'long'
+    when char_length(coalesce(message.body, '')) <= 80 then 'short'
+    when char_length(coalesce(message.body, '')) <= 500 then 'normal'
+    else 'long'
+  end
+  from public.messages as message
+  where message.id = target_message_id;
+$$;
+
+create or replace function private.max_response_delay_class(
+  first_class text,
+  second_class text
+)
+returns text
+language plpgsql
+immutable
+security invoker
+set search_path = ''
+as $$
+begin
+  if first_class not in ('short', 'normal', 'long')
+    or second_class not in ('short', 'normal', 'long')
+  then
+    raise exception 'invalid response delay class' using errcode = '22023';
+  end if;
+  if first_class = 'long' or second_class = 'long' then
+    return 'long';
+  elsif first_class = 'normal' or second_class = 'normal' then
+    return 'normal';
+  end if;
+  return 'short';
+end;
+$$;
+
+revoke all on function private.response_delay_class_for_message(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.max_response_delay_class(text, text)
+  from public, anon, authenticated, service_role;
+
+create or replace function private.rollover_response_batch(
+  target_batch_id uuid,
+  target_message_id uuid,
+  observed_at timestamptz,
+  target_delay_class text,
+  target_include_message boolean,
+  target_reason text,
+  request_trace_id uuid,
+  request_correlation_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  old_batch private.pedro_response_batches%rowtype;
+  new_batch private.pedro_response_batches%rowtype;
+  anchor_at timestamptz;
+  has_included_messages boolean;
+begin
+  if target_delay_class not in ('short', 'normal', 'long')
+    or nullif(btrim(coalesce(target_reason, '')), '') is null
+  then
+    raise exception 'invalid response batch rollover'
+      using errcode = '22023';
+  end if;
+
+  select batch.*
+  into strict old_batch
+  from private.pedro_response_batches as batch
+  where batch.id = target_batch_id
+  for update;
+
+  if old_batch.status in ('consumed', 'cancelled') then
+    return null;
+  end if;
+
+  select exists (
+    select 1
+    from private.pedro_response_batch_messages as batch_message
+    join public.messages as message
+      on message.id = batch_message.message_id
+    where batch_message.batch_id = old_batch.id
+      and batch_message.included
+      and message.deleted_at is null
+  ) or target_include_message
+  into has_included_messages;
+
+  update private.pedro_response_batches
+  set
+    status = 'cancelled',
+    cancelled_at = now(),
+    trace_id = request_trace_id,
+    correlation_id = request_correlation_id,
+    updated_at = now(),
+    version = version + 1
+  where id = old_batch.id;
+
+  if not has_included_messages then
+    return null;
+  end if;
+
+  anchor_at := greatest(observed_at, old_batch.last_inbound_at, now());
+  insert into private.pedro_response_batches (
+    organization_id,
+    operation_id,
+    conversation_id,
+    status,
+    opened_at,
+    last_inbound_at,
+    grouping_due_at,
+    grouping_deadline_at,
+    delay_class,
+    trace_id,
+    correlation_id
+  )
+  values (
+    old_batch.organization_id,
+    old_batch.operation_id,
+    old_batch.conversation_id,
+    'collecting',
+    anchor_at,
+    anchor_at,
+    anchor_at + interval '10 seconds',
+    anchor_at + interval '30 seconds',
+    private.max_response_delay_class(
+      old_batch.delay_class,
+      target_delay_class
+    ),
+    request_trace_id,
+    request_correlation_id
+  )
+  returning * into strict new_batch;
+
+  insert into private.pedro_response_batch_messages (
+    batch_id,
+    message_id,
+    organization_id,
+    operation_id,
+    conversation_id,
+    observed_at,
+    revision,
+    included
+  )
+  select
+    new_batch.id,
+    message.id,
+    new_batch.organization_id,
+    new_batch.operation_id,
+    new_batch.conversation_id,
+    batch_message.observed_at,
+    message.revision,
+    true
+  from private.pedro_response_batch_messages as batch_message
+  join public.messages as message
+    on message.id = batch_message.message_id
+  where batch_message.batch_id = old_batch.id
+    and batch_message.included
+    and message.deleted_at is null;
+
+  if target_include_message then
+    insert into private.pedro_response_batch_messages (
+      batch_id,
+      message_id,
+      organization_id,
+      operation_id,
+      conversation_id,
+      observed_at,
+      revision,
+      included
+    )
+    select
+      new_batch.id,
+      message.id,
+      message.organization_id,
+      message.operation_id,
+      message.conversation_id,
+      observed_at,
+      message.revision,
+      message.deleted_at is null
+    from public.messages as message
+    where message.id = target_message_id
+    on conflict (batch_id, message_id)
+    do update
+    set
+      observed_at = greatest(
+        private.pedro_response_batch_messages.observed_at,
+        excluded.observed_at
+      ),
+      revision = excluded.revision,
+      included = excluded.included;
+  end if;
+
+  update private.pedro_response_batches
+  set superseded_by_batch_id = new_batch.id
+  where id = old_batch.id;
+
+  perform private.schedule_t07_job(
+    new_batch.organization_id,
+    new_batch.operation_id,
+    't07.close_response_batch',
+    'pedro_response_batch',
+    new_batch.id,
+    new_batch.grouping_due_at,
+    't07:batch:close:' || new_batch.id::text
+      || ':v' || new_batch.version::text,
+    jsonb_build_object(
+      'batch_id', new_batch.id,
+      'rollover_reason', left(btrim(target_reason), 120)
+    ),
+    request_trace_id,
+    request_correlation_id
+  );
+
+  return new_batch.id;
+end;
+$$;
+
+revoke all on function private.rollover_response_batch(
+  uuid, uuid, timestamptz, text, boolean, text, uuid, uuid
+) from public, anon, authenticated, service_role;
+
 create or replace function private.record_inbound_response_batch(
   target_message_id uuid,
   observed_at timestamptz,
@@ -751,6 +1115,7 @@ declare
   message_record public.messages%rowtype;
   batch_record private.pedro_response_batches%rowtype;
   next_due timestamptz;
+  successor_batch_id uuid;
 begin
   if target_delay_class not in ('short', 'normal', 'long') then
     raise exception 'invalid response delay class' using errcode = '22023';
@@ -810,10 +1175,21 @@ begin
       request_correlation_id
     )
     returning * into strict batch_record;
-  elsif batch_record.status <> 'collecting' then
-    -- A ready/processing/completed batch must be consumed or cancelled first.
-    raise exception 'response batch is no longer collecting'
-      using errcode = '55000';
+  elsif batch_record.status <> 'collecting'
+    or batch_record.grouping_deadline_at < now()
+    or observed_at > batch_record.grouping_deadline_at
+  then
+    successor_batch_id := private.rollover_response_batch(
+      batch_record.id,
+      message_record.id,
+      observed_at,
+      target_delay_class,
+      true,
+      'new inbound superseded pending response',
+      request_trace_id,
+      request_correlation_id
+    );
+    return successor_batch_id;
   else
     next_due := least(
       observed_at + interval '10 seconds',
@@ -822,8 +1198,14 @@ begin
     update private.pedro_response_batches
     set
       last_inbound_at = greatest(last_inbound_at, observed_at),
-      grouping_due_at = greatest(last_inbound_at, next_due),
-      delay_class = target_delay_class,
+      grouping_due_at = least(
+        grouping_deadline_at,
+        greatest(grouping_due_at, last_inbound_at, next_due)
+      ),
+      delay_class = private.max_response_delay_class(
+        delay_class,
+        target_delay_class
+      ),
       trace_id = request_trace_id,
       correlation_id = request_correlation_id,
       updated_at = observed_at,
@@ -894,7 +1276,7 @@ begin
     perform private.record_inbound_response_batch(
       new.id,
       coalesce(new.provider_occurred_at, new.created_at),
-      'normal',
+      private.response_delay_class_for_message(new.id),
       gen_random_uuid(),
       gen_random_uuid()
     );
@@ -966,9 +1348,14 @@ as $$
 declare
   message_record public.messages%rowtype;
   existing_revision private.provider_message_revisions%rowtype;
+  batch_record private.pedro_response_batches%rowtype;
   next_revision integer;
+  apply_revision boolean := true;
+  stale_reason_value text;
+  successor_batch_id uuid;
 begin
   if target_revision_kind not in ('edit', 'delete')
+    or target_provider_occurred_at is null
     or target_payload_hash !~ '^[0-9a-f]{64}$'
     or (
       target_revision_kind = 'edit'
@@ -983,30 +1370,9 @@ begin
       using errcode = '22023';
   end if;
 
-  select revision.*
-  into existing_revision
-  from private.provider_message_revisions as revision
-  where revision.connection_id = target_connection_id
-    and revision.provider_event_id = target_provider_event_id;
-
-  if existing_revision.id is not null then
-    if existing_revision.payload_hash <> target_payload_hash
-      or existing_revision.revision_kind <> target_revision_kind
-      or existing_revision.target_provider_message_id
-        <> target_provider_message_id
-      or existing_revision.revised_body
-        is distinct from target_revised_body
-    then
-      raise exception 'provider revision replay conflict'
-        using errcode = '23505';
-    end if;
-    return jsonb_build_object(
-      'status', 'duplicate',
-      'message_id', existing_revision.target_message_id,
-      'revision', existing_revision.revision_number
-    );
-  end if;
-
+  -- The target Message is the serialization fence for provider revisions.
+  -- Concurrent delivery of the same provider event therefore rechecks dedupe
+  -- after the first transaction commits instead of leaking a unique error.
   select message.*
   into strict message_record
   from public.messages as message
@@ -1023,7 +1389,48 @@ begin
       using errcode = '23514';
   end if;
 
+  select revision.*
+  into existing_revision
+  from private.provider_message_revisions as revision
+  where revision.connection_id = target_connection_id
+    and revision.provider_event_id = target_provider_event_id;
+
+  if existing_revision.id is not null then
+    if existing_revision.payload_hash <> target_payload_hash
+      or existing_revision.revision_kind <> target_revision_kind
+      or existing_revision.target_provider_message_id
+        <> target_provider_message_id
+      or existing_revision.revised_body
+        is distinct from target_revised_body
+      or existing_revision.provider_occurred_at
+        <> target_provider_occurred_at
+    then
+      raise exception 'provider revision replay conflict'
+        using errcode = '23505';
+    end if;
+    return jsonb_build_object(
+      'status', 'duplicate',
+      'message_id', existing_revision.target_message_id,
+      'revision', existing_revision.revision_number,
+      'applied', existing_revision.is_applied
+    );
+  end if;
+
   next_revision := message_record.revision + 1;
+  if target_provider_occurred_at
+    < message_record.provider_revision_occurred_at
+  then
+    apply_revision := false;
+    stale_reason_value := 'older_provider_time';
+  elsif target_revision_kind = 'edit'
+    and (
+      message_record.deleted_at is not null
+      or message_record.provider_revision_kind = 'delete'
+    )
+  then
+    apply_revision := false;
+    stale_reason_value := 'deleted_message_is_terminal';
+  end if;
 
   insert into private.provider_message_revisions (
     organization_id,
@@ -1037,6 +1444,8 @@ begin
     revised_body,
     payload_hash,
     provider_occurred_at,
+    is_applied,
+    stale_reason,
     trace_id,
     correlation_id
   )
@@ -1052,6 +1461,8 @@ begin
     target_revised_body,
     target_payload_hash,
     target_provider_occurred_at,
+    apply_revision,
+    stale_reason_value,
     request_trace_id,
     request_correlation_id
   );
@@ -1066,12 +1477,26 @@ begin
   set
     revision = next_revision,
     edited_at = case
-      when target_revision_kind = 'edit' then target_provider_occurred_at
+      when apply_revision and target_revision_kind = 'edit'
+        then target_provider_occurred_at
       else edited_at
     end,
     deleted_at = case
-      when target_revision_kind = 'delete' then target_provider_occurred_at
-      else null
+      when apply_revision and target_revision_kind = 'delete'
+        then target_provider_occurred_at
+      else deleted_at
+    end,
+    provider_revision_occurred_at = case
+      when apply_revision then target_provider_occurred_at
+      else provider_revision_occurred_at
+    end,
+    provider_revision_event_id = case
+      when apply_revision then target_provider_event_id
+      else provider_revision_event_id
+    end,
+    provider_revision_kind = case
+      when apply_revision then target_revision_kind
+      else provider_revision_kind
     end
   where id = message_record.id;
 
@@ -1083,9 +1508,103 @@ begin
 
   update private.pedro_response_batch_messages
   set
-    revision = next_revision,
-    included = target_revision_kind <> 'delete'
+    revision = case when apply_revision then next_revision else revision end,
+    observed_at = case
+      when apply_revision and target_revision_kind = 'edit' then now()
+      else observed_at
+    end,
+    included = case
+      when not apply_revision then included
+      when target_revision_kind = 'delete' then false
+      else true
+    end
   where message_id = message_record.id;
+
+  if apply_revision then
+    select batch.*
+    into batch_record
+    from private.pedro_response_batches as batch
+    join private.pedro_response_batch_messages as batch_message
+      on batch_message.batch_id = batch.id
+    where batch_message.message_id = message_record.id
+      and batch.status in (
+        'collecting',
+        'delaying',
+        'ready',
+        'processing',
+        'completed'
+      )
+    for update of batch;
+
+    if batch_record.id is not null
+      and target_revision_kind = 'edit'
+      and batch_record.status = 'collecting'
+      and batch_record.grouping_deadline_at >= now()
+    then
+      update private.pedro_response_batches
+      set
+        last_inbound_at = greatest(last_inbound_at, now()),
+        grouping_due_at = least(
+          grouping_deadline_at,
+          greatest(grouping_due_at, now() + interval '10 seconds')
+        ),
+        trace_id = request_trace_id,
+        correlation_id = request_correlation_id,
+        updated_at = now(),
+        version = version + 1
+      where id = batch_record.id
+      returning * into strict batch_record;
+
+      perform private.schedule_t07_job(
+        batch_record.organization_id,
+        batch_record.operation_id,
+        't07.close_response_batch',
+        'pedro_response_batch',
+        batch_record.id,
+        batch_record.grouping_due_at,
+        't07:batch:close:' || batch_record.id::text
+          || ':v' || batch_record.version::text,
+        jsonb_build_object(
+          'batch_id', batch_record.id,
+          'reset_by_revision', next_revision
+        ),
+        request_trace_id,
+        request_correlation_id
+      );
+    elsif batch_record.id is not null
+      and (
+        target_revision_kind = 'edit'
+        or batch_record.status <> 'collecting'
+      )
+    then
+      successor_batch_id := private.rollover_response_batch(
+        batch_record.id,
+        message_record.id,
+        now(),
+        private.response_delay_class_for_message(message_record.id),
+        target_revision_kind = 'edit',
+        'provider revision superseded pending response',
+        request_trace_id,
+        request_correlation_id
+      );
+    elsif batch_record.id is not null
+      and target_revision_kind = 'delete'
+      and not exists (
+        select 1
+        from private.pedro_response_batch_messages as batch_message
+        where batch_message.batch_id = batch_record.id
+          and batch_message.included
+      )
+    then
+      perform private.cancel_response_batch(
+        batch_record.operation_id,
+        batch_record.id,
+        'all inbound messages were deleted before processing',
+        request_trace_id,
+        request_correlation_id
+      );
+    end if;
+  end if;
 
   insert into audit.audit_events (
     organization_id,
@@ -1104,6 +1623,7 @@ begin
     target_operation_id,
     null,
     case
+      when not apply_revision then 'message.provider_revision_ignored'
       when target_revision_kind = 'edit'
         then 'message.provider_edited'
       else 'message.provider_deleted'
@@ -1113,6 +1633,8 @@ begin
     jsonb_build_object('revision', message_record.revision),
     jsonb_build_object(
       'revision', next_revision,
+      'applied', apply_revision,
+      'stale_reason', stale_reason_value,
       'provider_event_id_hash', encode(
         sha256(convert_to(target_provider_event_id, 'UTF8')),
         'hex'
@@ -1123,10 +1645,12 @@ begin
   );
 
   return jsonb_build_object(
-    'status', 'applied',
+    'status', case when apply_revision then 'applied' else 'stale' end,
     'message_id', message_record.id,
     'revision', next_revision,
-    'deleted', target_revision_kind = 'delete'
+    'deleted', apply_revision and target_revision_kind = 'delete',
+    'successor_batch_id', successor_batch_id,
+    'stale_reason', stale_reason_value
   );
 end;
 $$;
@@ -1153,7 +1677,10 @@ as $$
         from private.provider_message_revisions as revision
         where revision.target_message_id = message.id
           and revision.revision_kind = 'edit'
-        order by revision.revision_number desc
+          and revision.is_applied
+        order by
+          revision.provider_occurred_at desc,
+          revision.revision_number desc
         limit 1
       ),
       message.body
@@ -1256,6 +1783,7 @@ security definer
 set search_path = ''
 as $$
 declare
+  snapshot_record private.operation_capacity_commands%rowtype;
   command_record private.operation_capacity_commands%rowtype;
   request_hash_value text;
 begin
@@ -1300,7 +1828,35 @@ begin
     request_correlation_id
   )
   on conflict (organization_id, operation_id, effect_key)
-  do nothing;
+  do update
+  set
+    status = case
+      when private.operation_capacity_commands.status = 'failed'
+        then 'pending'
+      else private.operation_capacity_commands.status
+    end,
+    run_at = case
+      when private.operation_capacity_commands.status = 'failed'
+        then excluded.run_at
+      when private.operation_capacity_commands.status = 'pending'
+        then least(
+          private.operation_capacity_commands.run_at,
+          excluded.run_at
+        )
+      else private.operation_capacity_commands.run_at
+    end,
+    attempts = case
+      when private.operation_capacity_commands.status = 'failed' then 0
+      else private.operation_capacity_commands.attempts
+    end,
+    last_error_code = case
+      when private.operation_capacity_commands.status = 'failed' then null
+      else private.operation_capacity_commands.last_error_code
+    end,
+    updated_at = case
+      when private.operation_capacity_commands.status = 'failed' then now()
+      else private.operation_capacity_commands.updated_at
+    end;
 
   select command.*
   into strict command_record
@@ -1467,7 +2023,6 @@ security definer
 set search_path = ''
 as $$
 declare
-  snapshot_record private.operation_capacity_commands%rowtype;
   command_record private.operation_capacity_commands%rowtype;
   state_record private.operation_capacity_state%rowtype;
   backlog_record private.operation_capacity_backlog%rowtype;
@@ -1481,7 +2036,8 @@ declare
   next_run_at timestamptz;
   result_value jsonb;
 begin
-  -- Read the routing key without a row lock, then begin the domain lock order.
+  -- Read only the routing key, then preserve the domain lock order. The
+  -- consumer claims the OperationCapacity row with SKIP LOCKED before entry.
   select command.*
   into snapshot_record
   from private.operation_capacity_commands as command
@@ -1569,7 +2125,7 @@ begin
           'conversation_id', backlog_record.conversation_id,
           'backlog_kind', backlog_record.backlog_kind,
           'source_message_id', backlog_record.source_message_id,
-          'observed_at', now()
+          'observed_at', backlog_record.arrived_at
         ),
         't07:drain-backlog:' || backlog_record.id::text,
         now(),
@@ -1600,7 +2156,8 @@ begin
           'requested_version',
             conversation_record.pending_return_requested_version,
           'target_mode', conversation_record.pending_return_target_mode,
-          'observed_at', now()
+          'observed_at',
+            conversation_record.pending_return_requested_at
         ),
         't07:resume-pending-return:'
           || conversation_record.id::text
@@ -1656,7 +2213,7 @@ begin
           'conversation_id', conversation_record.id,
           'last_pedro_outbound_at',
             conversation_record.last_pedro_outbound_at,
-          'observed_at', now()
+          'observed_at', conversation_record.last_pedro_outbound_at
         ),
         't07:sleep:' || conversation_record.id::text
           || ':'
@@ -1702,7 +2259,10 @@ begin
         jsonb_build_object(
           'batch_id', batch_record.id,
           'batch_version', batch_record.version,
-          'observed_at', now()
+          'observed_at', coalesce(
+            batch_record.delay_due_at,
+            batch_record.grouping_due_at
+          )
         ),
         't07:batch:' || batch_record.status || ':'
           || batch_record.id::text
@@ -1786,7 +2346,8 @@ begin
           coalesce(
             state_record.last_proactive_admitted_at + interval '1 minute',
             now() + interval '5 seconds'
-          )
+          ),
+          now() + interval '5 seconds'
         );
       end if;
     elsif active_count >= 30
@@ -1837,7 +2398,7 @@ begin
       admission_kind_value,
       backlog_record.backlog_kind,
       backlog_record.source_message_id,
-      (command_record.payload ->> 'observed_at')::timestamptz,
+      now(),
       't07:admit-backlog:' || backlog_record.id::text,
       null,
       'durable backlog drain',
@@ -2051,7 +2612,7 @@ begin
       null,
       null,
       null,
-      (command_record.payload ->> 'observed_at')::timestamptz,
+      now(),
       command_record.effect_key || ':effect',
       null,
       'five minutes without lead response',
@@ -2256,6 +2817,8 @@ set search_path = ''
 as $$
 declare
   candidate_id uuid;
+  candidate_operation_id uuid;
+  claimed_operation_ids uuid[] := '{}'::uuid[];
   result_value jsonb;
   processed_count integer := 0;
   deferred_count integer := 0;
@@ -2268,15 +2831,23 @@ begin
   end if;
 
   for command_index in 1..maximum_commands loop
-    select command.id
-    into candidate_id
+    select command.id, command.operation_id
+    into candidate_id, candidate_operation_id
     from private.operation_capacity_commands as command
+    join private.operation_capacity_state as state
+      on state.operation_id = command.operation_id
     where command.status = 'pending'
       and command.run_at <= now()
+      and not command.operation_id = any(claimed_operation_ids)
     order by command.run_at, command.created_at, command.id
-    limit 1;
+    limit 1
+    for update of state skip locked;
 
     exit when candidate_id is null;
+    claimed_operation_ids := array_append(
+      claimed_operation_ids,
+      candidate_operation_id
+    );
 
     begin
       result_value := private.process_capacity_command(candidate_id);
@@ -2330,6 +2901,8 @@ create or replace function private.claim_ready_response_batch(
   target_operation_id uuid,
   target_batch_id uuid,
   target_effect_key text,
+  target_worker_id uuid,
+  lease_seconds integer,
   request_trace_id uuid,
   request_correlation_id uuid
 )
@@ -2341,7 +2914,18 @@ as $$
 declare
   batch_record private.pedro_response_batches%rowtype;
   message_payload jsonb;
+  input_hash_value text;
+  lease_token_value uuid;
+  claim_status text;
 begin
+  if target_worker_id is null
+    or nullif(target_effect_key, '') is null
+    or lease_seconds not between 15 and 300
+  then
+    raise exception 'invalid response batch claim'
+      using errcode = '22023';
+  end if;
+
   select batch.*
   into strict batch_record
   from private.pedro_response_batches as batch
@@ -2349,29 +2933,74 @@ begin
     and batch.id = target_batch_id
   for update;
 
-  if batch_record.status = 'processing'
-    and batch_record.response_effect_key = target_effect_key
-  then
+  if batch_record.status = 'completed' then
+    if batch_record.processing_lease_until > now()
+      and batch_record.processing_worker_id <> target_worker_id
+    then
+      return jsonb_build_object(
+        'status', 'busy',
+        'batch_id', batch_record.id,
+        'lease_until', batch_record.processing_lease_until
+      );
+    end if;
+    lease_token_value := gen_random_uuid();
+    update private.pedro_response_batches
+    set
+      processing_worker_id = target_worker_id,
+      processing_lease_token = lease_token_value,
+      processing_lease_until = now()
+        + make_interval(secs => lease_seconds),
+      processing_claim_count = processing_claim_count + 1,
+      trace_id = request_trace_id,
+      correlation_id = request_correlation_id,
+      updated_at = now(),
+      version = version + 1
+    where id = batch_record.id
+    returning * into strict batch_record;
     return jsonb_build_object(
-      'status', 'duplicate',
-      'batch_id', batch_record.id
+      'status', 'completed',
+      'recovered', true,
+      'batch_id', batch_record.id,
+      'conversation_id', batch_record.conversation_id,
+      'effect_key', batch_record.response_effect_key,
+      'lease_token', batch_record.processing_lease_token,
+      'lease_until', batch_record.processing_lease_until
     );
   end if;
-  if batch_record.status <> 'ready' then
+
+  if batch_record.status = 'processing'
+    and batch_record.processing_lease_until > now()
+  then
+    if batch_record.response_effect_key = target_effect_key
+      and batch_record.processing_worker_id = target_worker_id
+    then
+      claim_status := 'resumed';
+      lease_token_value := batch_record.processing_lease_token;
+      update private.pedro_response_batches
+      set
+        processing_lease_until = now()
+          + make_interval(secs => lease_seconds),
+        trace_id = request_trace_id,
+        correlation_id = request_correlation_id,
+        updated_at = now()
+      where id = batch_record.id
+      returning * into strict batch_record;
+    else
+      return jsonb_build_object(
+        'status', 'busy',
+        'batch_id', batch_record.id,
+        'lease_until', batch_record.processing_lease_until
+      );
+    end if;
+  elsif batch_record.status in ('ready', 'processing') then
+    claim_status := case
+      when batch_record.status = 'processing' then 'reclaimed'
+      else 'processing'
+    end;
+    lease_token_value := gen_random_uuid();
+  else
     raise exception 'response batch is not ready' using errcode = '55000';
   end if;
-
-  update private.pedro_response_batches
-  set
-    status = 'processing',
-    processing_at = now(),
-    response_effect_key = target_effect_key,
-    trace_id = request_trace_id,
-    correlation_id = request_correlation_id,
-    updated_at = now(),
-    version = version + 1
-  where id = batch_record.id
-  returning * into strict batch_record;
 
   select coalesce(
     jsonb_agg(
@@ -2390,11 +3019,52 @@ begin
     on message.id = batch_message.message_id
   where batch_message.batch_id = batch_record.id;
 
+  input_hash_value := encode(
+    sha256(
+      convert_to(
+        jsonb_build_object(
+          'batch_id', batch_record.id,
+          'messages', message_payload
+        )::text,
+        'UTF8'
+      )
+    ),
+    'hex'
+  );
+
+  if claim_status in ('processing', 'reclaimed') then
+    update private.pedro_response_batches
+    set
+      status = 'processing',
+      processing_at = coalesce(processing_at, now()),
+      processing_worker_id = target_worker_id,
+      processing_lease_token = lease_token_value,
+      processing_lease_until = now()
+        + make_interval(secs => lease_seconds),
+      processing_input_version = version,
+      processing_input_hash = input_hash_value,
+      processing_claim_count = processing_claim_count + 1,
+      response_effect_key = target_effect_key,
+      trace_id = request_trace_id,
+      correlation_id = request_correlation_id,
+      updated_at = now(),
+      version = version + 1
+    where id = batch_record.id
+    returning * into strict batch_record;
+  elsif batch_record.processing_input_hash <> input_hash_value then
+    raise exception 'response batch input changed under active lease'
+      using errcode = '40001';
+  end if;
+
   return jsonb_build_object(
-    'status', 'processing',
+    'status', claim_status,
     'batch_id', batch_record.id,
     'conversation_id', batch_record.conversation_id,
-    'effect_key', target_effect_key,
+    'effect_key', batch_record.response_effect_key,
+    'lease_token', batch_record.processing_lease_token,
+    'lease_until', batch_record.processing_lease_until,
+    'input_version', batch_record.processing_input_version,
+    'input_hash', batch_record.processing_input_hash,
     'messages', message_payload
   );
 end;
@@ -2404,6 +3074,9 @@ create or replace function private.complete_response_batch(
   target_operation_id uuid,
   target_batch_id uuid,
   target_effect_key text,
+  target_worker_id uuid,
+  target_lease_token uuid,
+  target_input_hash text,
   request_trace_id uuid,
   request_correlation_id uuid
 )
@@ -2427,31 +3100,56 @@ begin
       using errcode = '23505';
   end if;
   if batch_record.status = 'completed' then
-    return jsonb_build_object('status', 'duplicate');
+    if batch_record.processing_worker_id is not distinct from target_worker_id
+      and batch_record.processing_lease_token
+        is not distinct from target_lease_token
+    then
+      return jsonb_build_object(
+        'status', 'duplicate',
+        'lease_token', batch_record.processing_lease_token
+      );
+    end if;
+    raise exception 'response batch completion lease conflict'
+      using errcode = '40001';
   end if;
   if batch_record.status <> 'processing' then
     raise exception 'response batch is not processing'
       using errcode = '55000';
+  end if;
+  if batch_record.processing_worker_id is distinct from target_worker_id
+    or batch_record.processing_lease_token is distinct from target_lease_token
+    or batch_record.processing_lease_until <= now()
+    or batch_record.processing_input_hash is distinct from target_input_hash
+  then
+    raise exception 'response batch processing lease is stale'
+      using errcode = '40001';
   end if;
 
   update private.pedro_response_batches
   set
     status = 'completed',
     completed_at = now(),
+    processing_lease_until = now() + interval '2 minutes',
     trace_id = request_trace_id,
     correlation_id = request_correlation_id,
     updated_at = now(),
     version = version + 1
   where id = batch_record.id;
 
-  return jsonb_build_object('status', 'completed');
+  return jsonb_build_object(
+    'status', 'completed',
+    'lease_token', target_lease_token,
+    'lease_until', now() + interval '2 minutes'
+  );
 end;
 $$;
 
 create or replace function private.consume_response_batch(
   target_operation_id uuid,
   target_batch_id uuid,
-  target_effect_key text
+  target_effect_key text,
+  target_worker_id uuid,
+  target_lease_token uuid
 )
 returns jsonb
 language plpgsql
@@ -2474,6 +3172,13 @@ begin
   end if;
   if batch_record.status = 'consumed' then
     return jsonb_build_object('status', 'duplicate');
+  end if;
+  if batch_record.processing_worker_id is distinct from target_worker_id
+    or batch_record.processing_lease_token is distinct from target_lease_token
+    or batch_record.processing_lease_until <= now()
+  then
+    raise exception 'response batch completion lease is stale'
+      using errcode = '40001';
   end if;
   if batch_record.status <> 'completed' then
     raise exception 'response batch is not completed'
@@ -2563,17 +3268,258 @@ end;
 $$;
 
 revoke all on function private.claim_ready_response_batch(
-  uuid, uuid, text, uuid, uuid
+  uuid, uuid, text, uuid, integer, uuid, uuid
 ) from public, anon, authenticated, service_role;
 revoke all on function private.complete_response_batch(
-  uuid, uuid, text, uuid, uuid
+  uuid, uuid, text, uuid, uuid, text, uuid, uuid
 ) from public, anon, authenticated, service_role;
 revoke all on function private.consume_response_batch(
-  uuid, uuid, text
+  uuid, uuid, text, uuid, uuid
 ) from public, anon, authenticated, service_role;
 revoke all on function private.cancel_response_batch(
   uuid, uuid, text, uuid, uuid
 ) from public, anon, authenticated, service_role;
+
+create or replace function private.assert_t07_service_role()
+returns void
+language plpgsql
+stable
+security invoker
+set search_path = ''
+as $$
+begin
+  if current_setting('request.jwt.claim.role', true)
+      is distinct from 'service_role'
+    and session_user not in ('postgres', 'supabase_admin')
+  then
+    raise exception 'T07 worker service role required'
+      using errcode = '42501';
+  end if;
+end;
+$$;
+
+revoke all on function private.assert_t07_service_role()
+  from public, anon, authenticated, service_role;
+
+create or replace function public.service_claim_next_response_batch(
+  target_operation_id uuid,
+  target_worker_id uuid,
+  lease_seconds integer,
+  request_trace_id uuid,
+  request_correlation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  candidate_record private.pedro_response_batches%rowtype;
+  effect_key_value text;
+begin
+  perform private.assert_t07_service_role();
+  if target_worker_id is null
+    or lease_seconds not between 15 and 300
+  then
+    raise exception 'invalid response batch worker claim'
+      using errcode = '22023';
+  end if;
+
+  select batch.*
+  into candidate_record
+  from private.pedro_response_batches as batch
+  where batch.operation_id = target_operation_id
+    and (
+      batch.status = 'ready'
+      or (
+        batch.status in ('processing', 'completed')
+        and batch.processing_lease_until <= now()
+      )
+    )
+  order by
+    case batch.status
+      when 'completed' then 1
+      when 'processing' then 2
+      else 3
+    end,
+    coalesce(
+      batch.completed_at,
+      batch.processing_lease_until,
+      batch.ready_at
+    ),
+    batch.id
+  limit 1
+  for update skip locked;
+
+  if candidate_record.id is null then
+    return jsonb_build_object('status', 'idle');
+  end if;
+
+  effect_key_value := case
+    when candidate_record.status = 'ready'
+      then 't07:ai-turn:' || candidate_record.id::text
+        || ':v' || candidate_record.version::text
+    else candidate_record.response_effect_key
+  end;
+
+  return private.claim_ready_response_batch(
+    candidate_record.operation_id,
+    candidate_record.id,
+    effect_key_value,
+    target_worker_id,
+    lease_seconds,
+    request_trace_id,
+    request_correlation_id
+  );
+end;
+$$;
+
+create or replace function public.service_complete_response_batch(
+  target_operation_id uuid,
+  target_batch_id uuid,
+  target_effect_key text,
+  target_worker_id uuid,
+  target_lease_token uuid,
+  target_input_hash text,
+  request_trace_id uuid,
+  request_correlation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform private.assert_t07_service_role();
+  return private.complete_response_batch(
+    target_operation_id,
+    target_batch_id,
+    target_effect_key,
+    target_worker_id,
+    target_lease_token,
+    target_input_hash,
+    request_trace_id,
+    request_correlation_id
+  );
+end;
+$$;
+
+create or replace function public.service_consume_response_batch(
+  target_operation_id uuid,
+  target_batch_id uuid,
+  target_effect_key text,
+  target_worker_id uuid,
+  target_lease_token uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform private.assert_t07_service_role();
+  return private.consume_response_batch(
+    target_operation_id,
+    target_batch_id,
+    target_effect_key,
+    target_worker_id,
+    target_lease_token
+  );
+end;
+$$;
+
+create or replace function public.service_cancel_response_batch(
+  target_operation_id uuid,
+  target_batch_id uuid,
+  target_reason text,
+  request_trace_id uuid,
+  request_correlation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform private.assert_t07_service_role();
+  return private.cancel_response_batch(
+    target_operation_id,
+    target_batch_id,
+    target_reason,
+    request_trace_id,
+    request_correlation_id
+  );
+end;
+$$;
+
+create or replace function public.service_apply_provider_message_revision(
+  target_organization_id uuid,
+  target_operation_id uuid,
+  target_connection_id uuid,
+  target_provider_event_id text,
+  target_provider_message_id text,
+  target_revision_kind text,
+  target_revised_body text,
+  target_provider_occurred_at timestamptz,
+  target_payload_hash text,
+  request_trace_id uuid,
+  request_correlation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform private.assert_t07_service_role();
+  return private.apply_provider_message_revision(
+    target_organization_id,
+    target_operation_id,
+    target_connection_id,
+    target_provider_event_id,
+    target_provider_message_id,
+    target_revision_kind,
+    target_revised_body,
+    target_provider_occurred_at,
+    target_payload_hash,
+    request_trace_id,
+    request_correlation_id
+  );
+end;
+$$;
+
+revoke all on function public.service_claim_next_response_batch(
+  uuid, uuid, integer, uuid, uuid
+) from public, anon, authenticated;
+grant execute on function public.service_claim_next_response_batch(
+  uuid, uuid, integer, uuid, uuid
+) to service_role;
+revoke all on function public.service_complete_response_batch(
+  uuid, uuid, text, uuid, uuid, text, uuid, uuid
+) from public, anon, authenticated;
+grant execute on function public.service_complete_response_batch(
+  uuid, uuid, text, uuid, uuid, text, uuid, uuid
+) to service_role;
+revoke all on function public.service_consume_response_batch(
+  uuid, uuid, text, uuid, uuid
+) from public, anon, authenticated;
+grant execute on function public.service_consume_response_batch(
+  uuid, uuid, text, uuid, uuid
+) to service_role;
+revoke all on function public.service_cancel_response_batch(
+  uuid, uuid, text, uuid, uuid
+) from public, anon, authenticated;
+grant execute on function public.service_cancel_response_batch(
+  uuid, uuid, text, uuid, uuid
+) to service_role;
+revoke all on function public.service_apply_provider_message_revision(
+  uuid, uuid, uuid, text, text, text, text, timestamptz,
+  text, uuid, uuid
+) from public, anon, authenticated;
+grant execute on function public.service_apply_provider_message_revision(
+  uuid, uuid, uuid, text, text, text, text, timestamptz,
+  text, uuid, uuid
+) to service_role;
 
 create table private.pedro_outbound_effects (
   id uuid primary key default gen_random_uuid(),
@@ -2721,6 +3667,39 @@ $$;
 revoke all on function private.record_pedro_outbound_sent(
   uuid, uuid, text, timestamptz, uuid, uuid
 ) from public, anon, authenticated, service_role;
+
+create or replace function public.service_record_pedro_outbound_sent(
+  target_operation_id uuid,
+  target_conversation_id uuid,
+  target_effect_key text,
+  sent_at timestamptz,
+  request_trace_id uuid,
+  request_correlation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform private.assert_t07_service_role();
+  return private.record_pedro_outbound_sent(
+    target_operation_id,
+    target_conversation_id,
+    target_effect_key,
+    sent_at,
+    request_trace_id,
+    request_correlation_id
+  );
+end;
+$$;
+
+revoke all on function public.service_record_pedro_outbound_sent(
+  uuid, uuid, text, timestamptz, uuid, uuid
+) from public, anon, authenticated;
+grant execute on function public.service_record_pedro_outbound_sent(
+  uuid, uuid, text, timestamptz, uuid, uuid
+) to service_role;
 
 create or replace function public.set_operation_proactive_pause(
   target_operation_id uuid,

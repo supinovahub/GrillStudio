@@ -81,6 +81,100 @@ async function createConversation(options?: {
   return conversationId;
 }
 
+async function createAdmittedConversation() {
+  const conversationId = await createConversation({ connection: true });
+  await database`
+    select private.apply_operation_capacity_command(
+      ${operationId}::uuid,
+      ${conversationId}::uuid,
+      'admit_inbound',
+      'inbound',
+      'new_inbound',
+      null,
+      now(),
+      ${`t07-test-admit:${conversationId}`},
+      null,
+      null,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  return conversationId;
+}
+
+async function insertProviderMessage(
+  conversationId: string,
+  options?: {
+    body?: string;
+    kind?: "audio" | "document" | "image" | "text" | "video";
+    occurredAtSql?: "now" | "past";
+  },
+) {
+  const messageId = randomUUID();
+  const occurredAt = options?.occurredAtSql === "past" ? "past" : "now";
+  await database`
+    insert into public.messages (
+      id,
+      organization_id,
+      operation_id,
+      conversation_id,
+      connection_id,
+      direction,
+      kind,
+      body,
+      status,
+      provider_message_id,
+      provider_occurred_at,
+      created_by_type
+    )
+    values (
+      ${messageId}::uuid,
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${conversationId}::uuid,
+      ${connectionId}::uuid,
+      'inbound',
+      ${options?.kind ?? "text"},
+      ${options?.body ?? "mensagem do lead"},
+      'received',
+      ${`provider-${messageId}`},
+      case
+        when ${occurredAt} = 'past' then now() - interval '31 seconds'
+        else now()
+      end,
+      'provider'
+    )
+  `;
+  return messageId;
+}
+
+async function responseBatchId(conversationId: string) {
+  const rows = await database<Array<{ id: string }>>`
+    select id
+    from private.pedro_response_batches
+    where conversation_id = ${conversationId}::uuid
+      and status in (
+        'collecting', 'delaying', 'ready', 'processing', 'completed'
+      )
+  `;
+  return rows[0]!.id;
+}
+
+async function forceResponseBatchReady(batchId: string) {
+  await database`
+    update private.pedro_response_batches
+    set
+      status = 'ready',
+      delay_seconds = 4,
+      delay_due_at = greatest(grouping_due_at, now()),
+      ready_at = now(),
+      updated_at = now(),
+      version = version + 1
+    where id = ${batchId}::uuid
+      and status = 'collecting'
+  `;
+}
+
 test.describe.configure({ mode: "serial", timeout: 60_000 });
 
 test.beforeAll(async () => {
@@ -416,8 +510,8 @@ test("batch persiste delay e revisão mantém original imutável", async () => {
     where id = ${batchId}::uuid
   `;
   expect(delayed[0]!.status).toBe("delaying");
-  expect(delayed[0]!.delay_seconds).toBeGreaterThanOrEqual(12);
-  expect(delayed[0]!.delay_seconds).toBeLessThanOrEqual(35);
+  expect(delayed[0]!.delay_seconds).toBeGreaterThanOrEqual(4);
+  expect(delayed[0]!.delay_seconds).toBeLessThanOrEqual(12);
 
   await database`
     select private.apply_provider_message_revision(
@@ -488,6 +582,678 @@ test("batch persiste delay e revisão mantém original imutável", async () => {
     body: "original",
     included: false,
     revision: 3,
+  });
+});
+
+test("inbound durante delay cria sucessor sem abortar a mensagem", async () => {
+  const conversationId = await createAdmittedConversation();
+  await insertProviderMessage(conversationId, {
+    body: "primeira mensagem",
+    occurredAtSql: "past",
+  });
+  const firstBatchId = await responseBatchId(conversationId);
+  await database`
+    update private.pedro_response_batches
+    set
+      status = 'delaying',
+      delay_seconds = 12,
+      delay_due_at = greatest(grouping_due_at, now()) + interval '1 minute',
+      updated_at = now(),
+      version = version + 1
+    where id = ${firstBatchId}::uuid
+  `;
+
+  const secondMessageId = await insertProviderMessage(conversationId, {
+    body: "mandei um pdf tb",
+    kind: "document",
+  });
+  const state = await database<
+    Array<{
+      delay_class: string;
+      messages: number;
+      old_status: string;
+      successor_id: string;
+    }>
+  >`
+    select
+      old.status as old_status,
+      old.superseded_by_batch_id as successor_id,
+      successor.delay_class,
+      (
+        select count(*)::integer
+        from private.pedro_response_batch_messages as batch_message
+        where batch_message.batch_id = successor.id
+      ) as messages
+    from private.pedro_response_batches as old
+    join private.pedro_response_batches as successor
+      on successor.id = old.superseded_by_batch_id
+    where old.id = ${firstBatchId}::uuid
+  `;
+  const persisted = await database<Array<{ persisted: boolean }>>`
+    select exists (
+      select 1 from public.messages where id = ${secondMessageId}::uuid
+    ) as persisted
+  `;
+
+  expect(persisted[0]!.persisted).toBe(true);
+  expect(state[0]).toMatchObject({
+    delay_class: "long",
+    messages: 2,
+    old_status: "cancelled",
+  });
+  expect(state[0]!.successor_id).toBeTruthy();
+});
+
+test("lease expirado é recuperado e completion stale nunca vence", async () => {
+  const conversationId = await createAdmittedConversation();
+  await insertProviderMessage(conversationId, { body: "quero saber mais" });
+  const batchId = await responseBatchId(conversationId);
+  await forceResponseBatchReady(batchId);
+  await database`
+    update private.pedro_response_batches
+    set status = 'cancelled', cancelled_at = now(), updated_at = now()
+    where operation_id = ${operationId}::uuid
+      and id <> ${batchId}::uuid
+      and status in ('ready', 'processing', 'completed')
+  `;
+
+  const workerOne = randomUUID();
+  const firstClaim = await admin.rpc("service_claim_next_response_batch", {
+    lease_seconds: 15,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_worker_id: workerOne,
+  });
+  expect(firstClaim.error).toBeNull();
+  const first = firstClaim.data as {
+    effect_key: string;
+    input_hash: string;
+    lease_token: string;
+    status: string;
+  };
+  expect(first.status).toBe("processing");
+
+  await database`
+    update private.pedro_response_batches
+    set processing_lease_until = now() - interval '1 second'
+    where id = ${batchId}::uuid
+  `;
+  const workerTwo = randomUUID();
+  const reclaimed = await database<
+    Array<{
+      result: {
+        effect_key: string;
+        input_hash: string;
+        lease_token: string;
+        status: string;
+      };
+    }>
+  >`
+    select private.claim_ready_response_batch(
+      ${operationId}::uuid,
+      ${batchId}::uuid,
+      ${first.effect_key},
+      ${workerTwo}::uuid,
+      30,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  expect(reclaimed[0]!.result.status).toBe("reclaimed");
+
+  await expect(
+    database`
+      select private.complete_response_batch(
+        ${operationId}::uuid,
+        ${batchId}::uuid,
+        ${first.effect_key},
+        ${workerOne}::uuid,
+        ${first.lease_token}::uuid,
+        ${first.input_hash},
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      )
+    `,
+  ).rejects.toMatchObject({ code: "40001" });
+
+  const second = reclaimed[0]!.result;
+  await database`
+    select private.complete_response_batch(
+      ${operationId}::uuid,
+      ${batchId}::uuid,
+      ${second.effect_key},
+      ${workerTwo}::uuid,
+      ${second.lease_token}::uuid,
+      ${second.input_hash},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  await database`
+    update private.pedro_response_batches
+    set processing_lease_until = now() - interval '1 second'
+    where id = ${batchId}::uuid
+  `;
+
+  const workerThree = randomUUID();
+  const recoveredCompletion = await admin.rpc(
+    "service_claim_next_response_batch",
+    {
+      lease_seconds: 30,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+      target_worker_id: workerThree,
+    },
+  );
+  expect(recoveredCompletion.error).toBeNull();
+  const completed = recoveredCompletion.data as {
+    effect_key: string;
+    lease_token: string;
+    status: string;
+  };
+  expect(completed.status).toBe("completed");
+
+  const consumed = await admin.rpc("service_consume_response_batch", {
+    target_batch_id: batchId,
+    target_effect_key: completed.effect_key,
+    target_lease_token: completed.lease_token,
+    target_operation_id: operationId,
+    target_worker_id: workerThree,
+  });
+  expect(consumed.error).toBeNull();
+  expect((consumed.data as { status: string }).status).toBe("consumed");
+
+  const denied = await owner.rpc("service_claim_next_response_batch", {
+    lease_seconds: 30,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_worker_id: randomUUID(),
+  });
+  expect(denied.error).not.toBeNull();
+});
+
+test("novo inbound e edit durante processing invalidam o snapshot", async () => {
+  const conversationId = await createAdmittedConversation();
+  const messageId = await insertProviderMessage(conversationId, {
+    body: "texto original",
+  });
+  const batchId = await responseBatchId(conversationId);
+  await forceResponseBatchReady(batchId);
+  const workerId = randomUUID();
+  const claimed = await database<
+    Array<{
+      result: {
+        effect_key: string;
+        input_hash: string;
+        lease_token: string;
+      };
+    }>
+  >`
+    select private.claim_ready_response_batch(
+      ${operationId}::uuid,
+      ${batchId}::uuid,
+      ${`snapshot:${batchId}`},
+      ${workerId}::uuid,
+      30,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  const snapshot = claimed[0]!.result;
+
+  await database`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${`processing-edit-${messageId}`},
+      ${`provider-${messageId}`},
+      'edit',
+      'texto alterado durante geração',
+      now(),
+      ${"c".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  await expect(
+    database`
+      select private.complete_response_batch(
+        ${operationId}::uuid,
+        ${batchId}::uuid,
+        ${snapshot.effect_key},
+        ${workerId}::uuid,
+        ${snapshot.lease_token}::uuid,
+        ${snapshot.input_hash},
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      )
+    `,
+  ).rejects.toMatchObject({ code: "55000" });
+
+  const afterEdit = await database<
+    Array<{ old_status: string; successor_messages: number }>
+  >`
+    select
+      old.status as old_status,
+      (
+        select count(*)::integer
+        from private.pedro_response_batch_messages as batch_message
+        where batch_message.batch_id = old.superseded_by_batch_id
+      ) as successor_messages
+    from private.pedro_response_batches as old
+    where old.id = ${batchId}::uuid
+  `;
+  expect(afterEdit[0]).toEqual({
+    old_status: "cancelled",
+    successor_messages: 1,
+  });
+
+  const successorId = await responseBatchId(conversationId);
+  await database`
+    update private.pedro_response_batches
+    set
+      status = 'delaying',
+      delay_seconds = 4,
+      delay_due_at = greatest(grouping_due_at, now()) + interval '1 minute',
+      updated_at = now(),
+      version = version + 1
+    where id = ${successorId}::uuid
+  `;
+  const inboundId = await insertProviderMessage(conversationId, {
+    body: "mais uma coisa",
+  });
+  const persisted = await database<Array<{ persisted: boolean }>>`
+    select exists (
+      select 1 from public.messages where id = ${inboundId}::uuid
+    ) as persisted
+  `;
+  expect(persisted[0]!.persisted).toBe(true);
+});
+
+test("revisão usa relógio do provedor, é idempotente e reinicia grouping", async () => {
+  const conversationId = await createAdmittedConversation();
+  const messageId = await insertProviderMessage(conversationId, {
+    body: "texto inicial",
+  });
+  const batchId = await responseBatchId(conversationId);
+  await database`
+    update private.pedro_response_batches
+    set grouping_due_at = now() + interval '2 seconds'
+    where id = ${batchId}::uuid
+  `;
+  const before = await database<Array<{ grouping_due_at: string }>>`
+    select grouping_due_at
+    from private.pedro_response_batches
+    where id = ${batchId}::uuid
+  `;
+  await database`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${`first-edit-${messageId}`},
+      ${`provider-${messageId}`},
+      'edit',
+      'texto mais novo',
+      now(),
+      ${"d".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  const after = await database<Array<{ grouping_due_at: string }>>`
+    select grouping_due_at
+    from private.pedro_response_batches
+    where id = ${batchId}::uuid
+  `;
+  expect(Date.parse(after[0]!.grouping_due_at)).toBeGreaterThan(
+    Date.parse(before[0]!.grouping_due_at),
+  );
+
+  await database`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${`new-delete-${messageId}`},
+      ${`provider-${messageId}`},
+      'delete',
+      null,
+      now() + interval '2 seconds',
+      ${"e".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  const stale = await database<
+    Array<{ result: { stale_reason: string; status: string } }>
+  >`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${`late-edit-${messageId}`},
+      ${`provider-${messageId}`},
+      'edit',
+      'não pode ressuscitar',
+      now() + interval '1 second',
+      ${"f".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  expect(stale[0]!.result).toMatchObject({
+    stale_reason: "older_provider_time",
+    status: "stale",
+  });
+
+  const duplicateEvent = `duplicate-delete-${messageId}`;
+  const duplicateOccurredAt = new Date(Date.now() + 60_000).toISOString();
+  const duplicateResults = await Promise.all(
+    [randomUUID(), randomUUID()].map((traceId) =>
+      database<Array<{ result: { status: string } }>>`
+        select private.apply_provider_message_revision(
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          ${connectionId}::uuid,
+          ${duplicateEvent},
+          ${`provider-${messageId}`},
+          'delete',
+          null,
+          ${duplicateOccurredAt}::timestamptz,
+          ${"1".repeat(64)},
+          ${traceId}::uuid,
+          ${randomUUID()}::uuid
+        ) as result
+      `,
+    ),
+  );
+  expect(
+    duplicateResults.map((rows) => rows[0]!.result.status).sort(),
+  ).toEqual(["applied", "duplicate"]);
+
+  const final = await database<
+    Array<{
+      active_body: string | null;
+      deleted: boolean;
+      ignored: number;
+      watermark_kind: string;
+    }>
+  >`
+    select
+      private.message_active_body(message.id) as active_body,
+      message.deleted_at is not null as deleted,
+      message.provider_revision_kind as watermark_kind,
+      (
+        select count(*)::integer
+        from private.provider_message_revisions as revision
+        where revision.target_message_id = message.id
+          and not revision.is_applied
+      ) as ignored
+    from public.messages as message
+    where message.id = ${messageId}::uuid
+  `;
+  expect(final[0]).toEqual({
+    active_body: null,
+    deleted: true,
+    ignored: 1,
+    watermark_kind: "delete",
+  });
+});
+
+test("backlog diferido usa clock atual, aplica backoff e comando failed rearma", async () => {
+  const conversationId = await createConversation({ connection: true });
+  await database`
+    update public.operation_settings
+    set proactive_open_minute = 0, proactive_close_minute = 1440
+    where operation_id = ${operationId}::uuid
+  `;
+  const backlog = await database<Array<{ id: string }>>`
+    select (private.capacity_enqueue_waiting(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${conversationId}::uuid,
+      null,
+      'campaign',
+      now(),
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )).id
+  `;
+  const pause = await owner.rpc("set_operation_proactive_pause", {
+    paused: true,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_reason: "teste de backoff",
+  });
+  expect(pause.error).toBeNull();
+
+  const commandKey = `t07-test-drain:${backlog[0]!.id}`;
+  await database`
+    select private.enqueue_capacity_command(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      null,
+      ${conversationId}::uuid,
+      ${backlog[0]!.id}::uuid,
+      'drain_backlog',
+      jsonb_build_object(
+        'backlog_id', ${backlog[0]!.id}::uuid,
+        'conversation_id', ${conversationId}::uuid,
+        'backlog_kind', 'campaign',
+        'observed_at', '2026-07-31T00:00:00Z'::timestamptz
+      ),
+      ${commandKey},
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  const deferred = await database<
+    Array<{ result: { status: string }; run_at: string }>
+  >`
+    with processed as (
+      select private.process_capacity_command(command.id) as result
+      from private.operation_capacity_commands as command
+      where command.effect_key = ${commandKey}
+    )
+    select processed.result, command.run_at
+    from processed
+    join private.operation_capacity_commands as command
+      on command.effect_key = ${commandKey}
+  `;
+  expect(deferred[0]!.result.status).toBe("deferred");
+  expect(Date.parse(deferred[0]!.run_at)).toBeGreaterThan(Date.now());
+
+  const unpause = await owner.rpc("set_operation_proactive_pause", {
+    paused: false,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_reason: null,
+  });
+  expect(unpause.error).toBeNull();
+  await database`
+    update private.operation_capacity_backlog
+    set eligible_at = now()
+    where id = ${backlog[0]!.id}::uuid
+  `;
+  await database`
+    update private.operation_capacity_commands
+    set run_at = now()
+    where effect_key = ${commandKey}
+  `;
+  const admitted = await database<Array<{ result: { outcome: string } }>>`
+    select private.process_capacity_command(command.id) as result
+    from private.operation_capacity_commands as command
+    where command.effect_key = ${commandKey}
+  `;
+  expect(admitted[0]!.result.outcome).toBe("admitted");
+
+  const rearmKey = `t07-test-rearm:${randomUUID()}`;
+  const stablePayload = { stable: true };
+  await database`
+    select private.enqueue_capacity_command(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      null,
+      null,
+      null,
+      'maintenance',
+      ${database.json(stablePayload)}::jsonb,
+      ${rearmKey},
+      now() + interval '1 day',
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  await database`
+    update private.operation_capacity_commands
+    set status = 'failed', attempts = 8, last_error_code = '40001'
+    where effect_key = ${rearmKey}
+  `;
+  await database`
+    select private.enqueue_capacity_command(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      null,
+      null,
+      null,
+      'maintenance',
+      ${database.json(stablePayload)}::jsonb,
+      ${rearmKey},
+      now() + interval '1 day',
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  const rearmed = await database<
+    Array<{ attempts: number; last_error_code: string | null; status: string }>
+  >`
+    select status, attempts, last_error_code
+    from private.operation_capacity_commands
+    where effect_key = ${rearmKey}
+  `;
+  expect(rearmed[0]).toEqual({
+    attempts: 0,
+    last_error_code: null,
+    status: "pending",
+  });
+  await database`
+    update public.operation_settings
+    set proactive_open_minute = 510, proactive_close_minute = 1230
+    where operation_id = ${operationId}::uuid
+  `;
+});
+
+test("alta demanda começa após dois minutos e termina após cooldown", async () => {
+  const conversationId = await createConversation({ connection: true });
+  const backlog = await database<Array<{ id: string }>>`
+    select (private.capacity_enqueue_waiting(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${conversationId}::uuid,
+      null,
+      'new_inbound',
+      now() - interval '119 seconds',
+      now() + interval '1 day',
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )).id
+  `;
+  const beforeThreshold = await database<
+    Array<{ high_demand: boolean }>
+  >`
+    select (private.capacity_refresh_operation_state(
+      ${operationId}::uuid,
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )).high_demand
+  `;
+  expect(beforeThreshold[0]!.high_demand).toBe(false);
+
+  await database`
+    update private.operation_capacity_backlog
+    set arrived_at = now() - interval '121 seconds'
+    where id = ${backlog[0]!.id}::uuid
+  `;
+  const delayed = await database<
+    Array<{ automatic_proactive_paused: boolean; high_demand: boolean }>
+  >`
+    select
+      refreshed.high_demand,
+      refreshed.automatic_proactive_paused
+    from private.capacity_refresh_operation_state(
+      ${operationId}::uuid,
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as refreshed
+  `;
+  expect(delayed[0]).toEqual({
+    automatic_proactive_paused: true,
+    high_demand: true,
+  });
+
+  await database`
+    update private.operation_capacity_backlog
+    set status = 'cancelled', cancelled_at = now(), updated_at = now()
+    where id = ${backlog[0]!.id}::uuid
+  `;
+  const cooling = await database<Array<{ high_demand: boolean }>>`
+    select (private.capacity_refresh_operation_state(
+      ${operationId}::uuid,
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )).high_demand
+  `;
+  expect(cooling[0]!.high_demand).toBe(true);
+
+  await database`
+    update private.operation_capacity_state
+    set high_demand_recovery_since = now() - interval '301 seconds'
+    where operation_id = ${operationId}::uuid
+  `;
+  const recovered = await database<Array<{ high_demand: boolean }>>`
+    select (private.capacity_refresh_operation_state(
+      ${operationId}::uuid,
+      now(),
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )).high_demand
+  `;
+  expect(recovered[0]!.high_demand).toBe(false);
+});
+
+test("consumer durable usa SKIP LOCKED e limita uma Operação por rodada", async () => {
+  const contract = await database<
+    Array<{ fair_by_operation: boolean; skip_locked: boolean }>
+  >`
+    select
+      position(
+        'for update of state skip locked'
+        in lower(pg_get_functiondef(
+          'private.consume_capacity_commands(integer)'::regprocedure
+        ))
+      ) > 0 as skip_locked,
+      position(
+        'claimed_operation_ids'
+        in pg_get_functiondef(
+          'private.consume_capacity_commands(integer)'::regprocedure
+        )
+      ) > 0 as fair_by_operation
+  `;
+  expect(contract[0]).toEqual({
+    fair_by_operation: true,
+    skip_locked: true,
   });
 });
 
