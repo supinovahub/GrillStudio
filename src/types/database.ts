@@ -263,25 +263,29 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "context_publications_organization_id_behavioral_version_id_fkey"
-            columns: ["organization_id", "behavioral_version_id"]
-            isOneToOne: false
-            referencedRelation: "persona_versions"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "context_publications_organization_id_factual_version_id_fkey"
-            columns: ["organization_id", "factual_version_id"]
-            isOneToOne: false
-            referencedRelation: "institutional_profile_versions"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
             foreignKeyName: "context_publications_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_behavior_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "behavioral_version_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "persona_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_factual__fkey"
+            columns: ["organization_id", "operation_id", "factual_version_id"]
+            isOneToOne: false
+            referencedRelation: "institutional_profile_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
           },
           {
             foreignKeyName: "context_publications_organization_id_operation_id_fkey"
@@ -361,18 +365,18 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "institutional_profile_versio_organization_id_operation_id_fkey1"
+            columns: ["organization_id", "operation_id", "baseline_version_id"]
+            isOneToOne: false
+            referencedRelation: "institutional_profile_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
             foreignKeyName: "institutional_profile_version_organization_id_operation_id_fkey"
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
             referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "institutional_profile_versions_baseline_version_id_fkey"
-            columns: ["baseline_version_id"]
-            isOneToOne: false
-            referencedRelation: "institutional_profile_versions"
-            referencedColumns: ["id"]
           },
           {
             foreignKeyName: "institutional_profile_versions_organization_id_fkey"
@@ -856,6 +860,7 @@ export type Database = {
           operation_id: string
           organization_id: string
           persona_id: string
+          protected_rules: Json
           published_at: string | null
           published_by_user_id: string | null
           status: string
@@ -882,6 +887,7 @@ export type Database = {
           operation_id: string
           organization_id: string
           persona_id: string
+          protected_rules?: Json
           published_at?: string | null
           published_by_user_id?: string | null
           status?: string
@@ -908,6 +914,7 @@ export type Database = {
           operation_id?: string
           organization_id?: string
           persona_id?: string
+          protected_rules?: Json
           published_at?: string | null
           published_by_user_id?: string | null
           status?: string
@@ -920,13 +927,6 @@ export type Database = {
           version_number?: number
         }
         Relationships: [
-          {
-            foreignKeyName: "persona_versions_baseline_version_id_fkey"
-            columns: ["baseline_version_id"]
-            isOneToOne: false
-            referencedRelation: "persona_versions"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "persona_versions_organization_id_fkey"
             columns: ["organization_id"]
@@ -942,11 +942,28 @@ export type Database = {
             referencedColumns: ["organization_id", "id"]
           },
           {
-            foreignKeyName: "persona_versions_organization_id_persona_id_fkey"
-            columns: ["organization_id", "persona_id"]
+            foreignKeyName: "persona_versions_organization_id_operation_id_persona_id_b_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "persona_id",
+              "baseline_version_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "persona_versions"
+            referencedColumns: [
+              "organization_id",
+              "operation_id",
+              "persona_id",
+              "id",
+            ]
+          },
+          {
+            foreignKeyName: "persona_versions_organization_id_operation_id_persona_id_fkey"
+            columns: ["organization_id", "operation_id", "persona_id"]
             isOneToOne: false
             referencedRelation: "personas"
-            referencedColumns: ["organization_id", "id"]
+            referencedColumns: ["organization_id", "operation_id", "id"]
           },
         ]
       }
@@ -1329,16 +1346,6 @@ export type Database = {
         }
         Returns: Json
       }
-      set_context_production_after_reauthentication: {
-        Args: {
-          actor_user_id: string
-          enable_production: boolean
-          request_correlation_id: string
-          request_trace_id: string
-          target_operation_id: string
-        }
-        Returns: Json
-      }
       set_general_invitation_link_status: {
         Args: {
           request_correlation_id: string
@@ -1497,9 +1504,7 @@ export const Constants = {
   },
 } as const
 
-// Application aliases derived from the generated RPC contracts above.
 export type MemberWorkspace =
   Database["public"]["Functions"]["get_member_workspace_v2"]["Returns"][number]
-
 export type OperationShell =
   Database["public"]["Functions"]["get_operation_shell"]["Returns"][number]

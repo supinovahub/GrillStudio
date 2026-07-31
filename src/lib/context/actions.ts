@@ -10,7 +10,6 @@ import {
   type InstitutionalFieldKey,
 } from "@/lib/context/types";
 import { writeLog } from "@/lib/observability";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { Json } from "@/types/database";
 
@@ -86,7 +85,9 @@ export async function createContextDraftAction(formData: FormData) {
 }
 
 export async function saveInstitutionalDraftAction(formData: FormData) {
-  const { factualId, factualVersion, operationId } = contextIds(formData);
+  const factualId = field(formData, "factual_version_id");
+  const factualVersion = Number(field(formData, "factual_expected_version"));
+  const operationId = field(formData, "operation_id");
   const profileFields = Object.fromEntries(
     institutionalFields.map(([key]) => {
       const value: InstitutionalField = {
@@ -137,8 +138,11 @@ function booleanField(formData: FormData, name: string): boolean {
 }
 
 export async function savePersonaDraftAction(formData: FormData) {
-  const { behavioralId, behavioralVersion, operationId } =
-    contextIds(formData);
+  const behavioralId = field(formData, "behavioral_version_id");
+  const behavioralVersion = Number(
+    field(formData, "behavioral_expected_version"),
+  );
+  const operationId = field(formData, "operation_id");
   const identity = {
     city: field(formData, "persona_city"),
     creci: field(formData, "persona_creci"),
@@ -283,54 +287,4 @@ export async function archiveContextDraftAction(formData: FormData) {
 
   revalidatePath(contextPath);
   contextRedirect("rascunho-arquivado");
-}
-
-export async function setContextProductionAction(formData: FormData) {
-  const operationId = field(formData, "operation_id");
-  const password = field(formData, "password");
-  const enableProduction = field(formData, "enable_production") === "true";
-  const confirmed = formData.get("confirmation") === "on";
-  const context = await getRequestContext();
-
-  if (!operationId || !password || !confirmed) {
-    contextRedirect("producao-confirmacao-obrigatoria");
-  }
-
-  const supabase = await createClient();
-  const { data: userData, error: userError } = await supabase.auth.getUser();
-  const email = userData.user?.email;
-  if (userError || !userData.user || !email) {
-    redirect("/entrar");
-  }
-
-  const { error: reauthenticationError } =
-    await supabase.auth.signInWithPassword({ email, password });
-  if (reauthenticationError) {
-    contextRedirect("senha-incorreta");
-  }
-
-  const admin = createAdminClient();
-  const { data, error } = await admin.rpc(
-    "set_context_production_after_reauthentication",
-    {
-      actor_user_id: userData.user.id,
-      enable_production: enableProduction,
-      request_correlation_id: context.correlationId,
-      request_trace_id: context.traceId,
-      target_operation_id: operationId,
-    },
-  );
-
-  writeLog("context.production_changed", {
-    ...context,
-    outcome: error || !rpcSucceeded(data) ? "denied" : "succeeded",
-  });
-
-  if (error || !rpcSucceeded(data)) {
-    contextRedirect("producao-bloqueada");
-  }
-
-  revalidatePath(contextPath);
-  revalidatePath("/app/central");
-  contextRedirect(enableProduction ? "producao-habilitada" : "producao-desligada");
 }

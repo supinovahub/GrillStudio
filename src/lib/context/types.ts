@@ -51,6 +51,7 @@ export type BehavioralDraft = ContextDraft & {
   identity: Record<string, Json | undefined>;
   instructions: Record<string, Json | undefined>;
   persona_id: string;
+  protected_rules: Record<string, Json | undefined>;
   style_rules: Record<string, Json | undefined>;
 };
 
@@ -78,7 +79,10 @@ export type ContextWorkspace = {
   actor: {
     can_edit_institutional: boolean;
     can_edit_persona: boolean;
+    can_coordinate_context: boolean;
+    can_publish_context: boolean;
     can_publish_learning: boolean;
+    can_validate_context: boolean;
     is_owner: boolean;
   };
   behavioral_draft: BehavioralDraft | null;

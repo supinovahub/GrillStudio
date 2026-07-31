@@ -10,7 +10,7 @@ create table public.institutional_profile_versions (
     check (status in ('draft', 'validating', 'published', 'archived')),
   fields jsonb not null default '{}'::jsonb
     check (jsonb_typeof(fields) = 'object'),
-  baseline_version_id uuid references public.institutional_profile_versions(id),
+  baseline_version_id uuid,
   validation_errors jsonb not null default '[]'::jsonb
     check (jsonb_typeof(validation_errors) = 'array'),
   diff_snapshot jsonb,
@@ -27,8 +27,15 @@ create table public.institutional_profile_versions (
   version bigint not null default 1 check (version > 0),
   unique (operation_id, version_number),
   unique (organization_id, id),
+  unique (organization_id, operation_id, id),
   foreign key (organization_id, operation_id)
     references public.operations(organization_id, id) on delete cascade,
+  foreign key (organization_id, operation_id, baseline_version_id)
+    references public.institutional_profile_versions(
+      organization_id,
+      operation_id,
+      id
+    ),
   check (
     (status = 'draft' and validated_at is null and published_at is null)
     or (status = 'validating' and validated_at is not null and published_at is null)
@@ -44,6 +51,14 @@ create unique index institutional_profile_one_open_draft_per_operation
 create index institutional_profile_versions_operation_created_idx
   on public.institutional_profile_versions (operation_id, created_at desc);
 
+create index institutional_profile_versions_baseline_idx
+  on public.institutional_profile_versions (
+    organization_id,
+    operation_id,
+    baseline_version_id
+  )
+  where baseline_version_id is not null;
+
 create table public.personas (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
@@ -56,6 +71,7 @@ create table public.personas (
   updated_at timestamptz not null default now(),
   version bigint not null default 1 check (version > 0),
   unique (organization_id, id),
+  unique (organization_id, operation_id, id),
   unique (operation_id, internal_name),
   foreign key (organization_id, operation_id)
     references public.operations(organization_id, id) on delete cascade
@@ -77,7 +93,44 @@ create table public.persona_versions (
     check (jsonb_typeof(style_rules) = 'object'),
   instructions jsonb not null default '{}'::jsonb
     check (jsonb_typeof(instructions) = 'object'),
-  baseline_version_id uuid references public.persona_versions(id),
+  protected_rules jsonb not null default '{
+    "direct_ai_question": {
+      "action": "silent_escalation",
+      "send_reply": false
+    },
+    "fact_integrity": {
+      "invent_identity": false,
+      "invent_professional_experience": false,
+      "invent_creci": false,
+      "invent_price": false,
+      "invent_availability": false,
+      "invent_profitability": false
+    },
+    "opt_out": {
+      "action": "block_automatic_outbound",
+      "immediate": true
+    },
+    "privacy_request": {
+      "action": "silent_escalation",
+      "send_reply": false
+    },
+    "prohibited_effects": {
+      "approve_credit": false,
+      "negotiate_discount": false,
+      "request_sensitive_documents": false,
+      "reserve_unit": false,
+      "send_payment_instructions": false
+    },
+    "risk_escalation": {
+      "fraud": "silent_escalation",
+      "legal_complaint": "silent_escalation",
+      "media": "silent_escalation",
+      "threat": "silent_escalation",
+      "unsupported_language": "silent_escalation"
+    }
+  }'::jsonb
+    check (jsonb_typeof(protected_rules) = 'object'),
+  baseline_version_id uuid,
   validation_errors jsonb not null default '[]'::jsonb
     check (jsonb_typeof(validation_errors) = 'array'),
   diff_snapshot jsonb,
@@ -94,10 +147,25 @@ create table public.persona_versions (
   version bigint not null default 1 check (version > 0),
   unique (persona_id, version_number),
   unique (organization_id, id),
+  unique (organization_id, operation_id, id),
+  unique (organization_id, operation_id, persona_id, id),
   foreign key (organization_id, operation_id)
     references public.operations(organization_id, id) on delete cascade,
-  foreign key (organization_id, persona_id)
-    references public.personas(organization_id, id) on delete cascade,
+  foreign key (organization_id, operation_id, persona_id)
+    references public.personas(organization_id, operation_id, id)
+    on delete cascade,
+  foreign key (
+    organization_id,
+    operation_id,
+    persona_id,
+    baseline_version_id
+  )
+    references public.persona_versions(
+      organization_id,
+      operation_id,
+      persona_id,
+      id
+    ),
   check (
     (status = 'draft' and validated_at is null and published_at is null)
     or (status = 'validating' and validated_at is not null and published_at is null)
@@ -112,6 +180,15 @@ create unique index persona_versions_one_open_draft_per_persona
 
 create index persona_versions_operation_created_idx
   on public.persona_versions (operation_id, created_at desc);
+
+create index persona_versions_baseline_idx
+  on public.persona_versions (
+    organization_id,
+    operation_id,
+    persona_id,
+    baseline_version_id
+  )
+  where baseline_version_id is not null;
 
 create table public.context_publications (
   id uuid primary key default gen_random_uuid(),
@@ -132,11 +209,37 @@ create table public.context_publications (
   unique (organization_id, operation_id, id),
   foreign key (organization_id, operation_id)
     references public.operations(organization_id, id) on delete cascade,
-  foreign key (organization_id, behavioral_version_id)
-    references public.persona_versions(organization_id, id),
-  foreign key (organization_id, factual_version_id)
-    references public.institutional_profile_versions(organization_id, id)
+  foreign key (organization_id, operation_id, behavioral_version_id)
+    references public.persona_versions(organization_id, operation_id, id),
+  foreign key (organization_id, operation_id, factual_version_id)
+    references public.institutional_profile_versions(
+      organization_id,
+      operation_id,
+      id
+    )
 );
+
+create index context_publications_behavioral_version_idx
+  on public.context_publications (
+    organization_id,
+    operation_id,
+    behavioral_version_id
+  );
+
+create index context_publications_factual_version_idx
+  on public.context_publications (
+    organization_id,
+    operation_id,
+    factual_version_id
+  );
+
+create index operation_settings_active_context_publication_idx
+  on public.operation_settings (
+    organization_id,
+    operation_id,
+    active_context_publication_id
+  )
+  where active_context_publication_id is not null;
 
 alter table public.operation_settings
   add constraint operation_settings_active_context_publication_fkey
@@ -161,7 +264,22 @@ grant select on table public.personas to authenticated;
 grant select on table public.persona_versions to authenticated;
 grant select on table public.context_publications to authenticated;
 
-create or replace function private.can_read_context(target_operation_id uuid)
+create or replace function private.can_manage_institutional(
+  target_operation_id uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select private.has_membership_permission(
+    target_operation_id,
+    'publish_knowledge'
+  );
+$$;
+
+create or replace function private.can_manage_persona(target_operation_id uuid)
 returns boolean
 language sql
 stable
@@ -169,37 +287,99 @@ security definer
 set search_path = ''
 as $$
   select
-    private.has_membership_permission(target_operation_id, 'publish_knowledge')
-    or private.has_membership_permission(target_operation_id, 'train_pedro')
-    or private.has_membership_permission(target_operation_id, 'publish_learning');
+    private.has_membership_permission(target_operation_id, 'train_pedro')
+    or private.has_membership_permission(
+      target_operation_id,
+      'publish_learning'
+    );
 $$;
 
-revoke all on function private.can_read_context(uuid) from public;
-grant execute on function private.can_read_context(uuid) to authenticated;
+create or replace function private.can_coordinate_context(
+  target_operation_id uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    private.can_manage_institutional(target_operation_id)
+    and private.can_manage_persona(target_operation_id);
+$$;
+
+create or replace function private.can_validate_context(
+  target_operation_id uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    private.can_manage_institutional(target_operation_id)
+    and private.has_membership_permission(
+      target_operation_id,
+      'train_pedro'
+    );
+$$;
+
+create or replace function private.can_publish_context(
+  target_operation_id uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    private.can_manage_institutional(target_operation_id)
+    and private.has_membership_permission(
+      target_operation_id,
+      'publish_learning'
+    );
+$$;
+
+revoke all on function private.can_manage_institutional(uuid) from public;
+revoke all on function private.can_manage_persona(uuid) from public;
+revoke all on function private.can_coordinate_context(uuid) from public;
+revoke all on function private.can_validate_context(uuid) from public;
+revoke all on function private.can_publish_context(uuid) from public;
+grant execute on function private.can_manage_institutional(uuid)
+  to authenticated;
+grant execute on function private.can_manage_persona(uuid) to authenticated;
+grant execute on function private.can_coordinate_context(uuid)
+  to authenticated;
+grant execute on function private.can_validate_context(uuid)
+  to authenticated;
+grant execute on function private.can_publish_context(uuid)
+  to authenticated;
 
 create policy institutional_profile_versions_select_context_members
   on public.institutional_profile_versions
   for select
   to authenticated
-  using (private.can_read_context(operation_id));
+  using (private.can_manage_institutional(operation_id));
 
 create policy personas_select_context_members
   on public.personas
   for select
   to authenticated
-  using (private.can_read_context(operation_id));
+  using (private.can_manage_persona(operation_id));
 
 create policy persona_versions_select_context_members
   on public.persona_versions
   for select
   to authenticated
-  using (private.can_read_context(operation_id));
+  using (private.can_manage_persona(operation_id));
 
 create policy context_publications_select_context_members
   on public.context_publications
   for select
   to authenticated
-  using (private.can_read_context(operation_id));
+  using (private.can_coordinate_context(operation_id));
 
 create or replace function private.is_owner_for_operation(target_operation_id uuid)
 returns boolean
@@ -309,6 +489,50 @@ as $$
   );
 $$;
 
+create or replace function private.context_protected_rules()
+returns jsonb
+language sql
+immutable
+set search_path = ''
+as $$
+  select '{
+    "direct_ai_question": {
+      "action": "silent_escalation",
+      "send_reply": false
+    },
+    "fact_integrity": {
+      "invent_identity": false,
+      "invent_professional_experience": false,
+      "invent_creci": false,
+      "invent_price": false,
+      "invent_availability": false,
+      "invent_profitability": false
+    },
+    "opt_out": {
+      "action": "block_automatic_outbound",
+      "immediate": true
+    },
+    "privacy_request": {
+      "action": "silent_escalation",
+      "send_reply": false
+    },
+    "prohibited_effects": {
+      "approve_credit": false,
+      "negotiate_discount": false,
+      "request_sensitive_documents": false,
+      "reserve_unit": false,
+      "send_payment_instructions": false
+    },
+    "risk_escalation": {
+      "fraud": "silent_escalation",
+      "legal_complaint": "silent_escalation",
+      "media": "silent_escalation",
+      "threat": "silent_escalation",
+      "unsupported_language": "silent_escalation"
+    }
+  }'::jsonb;
+$$;
+
 create or replace function private.empty_institutional_fields()
 returns jsonb
 language sql
@@ -349,6 +573,7 @@ revoke all on function private.context_baseline_identity() from public;
 revoke all on function private.context_baseline_biography() from public;
 revoke all on function private.context_baseline_style() from public;
 revoke all on function private.context_baseline_instructions() from public;
+revoke all on function private.context_protected_rules() from public;
 revoke all on function private.empty_institutional_fields() from public;
 
 create or replace function private.profile_validation_errors(profile_fields jsonb)
@@ -441,7 +666,8 @@ create or replace function private.persona_validation_errors(
   persona_identity jsonb,
   persona_biography jsonb,
   persona_style jsonb,
-  persona_instructions jsonb
+  persona_instructions jsonb,
+  persona_protected_rules jsonb
 )
 returns jsonb
 language plpgsql
@@ -454,8 +680,15 @@ begin
   if jsonb_typeof(persona_identity) <> 'object'
     or jsonb_typeof(persona_biography) <> 'object'
     or jsonb_typeof(persona_style) <> 'object'
-    or jsonb_typeof(persona_instructions) <> 'object' then
+    or jsonb_typeof(persona_instructions) <> 'object'
+    or jsonb_typeof(persona_protected_rules) <> 'object' then
     return jsonb_build_array('Conteúdo da Persona inválido.');
+  end if;
+
+  if persona_protected_rules <> private.context_protected_rules() then
+    errors := errors || jsonb_build_array(
+      'As regras críticas protegidas da Persona foram alteradas.'
+    );
   end if;
 
   if nullif(btrim(persona_identity ->> 'full_name'), '') is null then
@@ -483,6 +716,30 @@ begin
     );
   end if;
 
+  if coalesce(
+    (persona_style ->> 'never_invent_personal_experience')::boolean,
+    false
+  ) is false then
+    errors := errors || jsonb_build_array(
+      'A Persona não pode inventar experiências pessoais.'
+    );
+  end if;
+
+  if coalesce(
+    (persona_style ->> 'one_question_at_a_time')::boolean,
+    false
+  ) is false then
+    errors := errors || jsonb_build_array(
+      'A Persona deve fazer uma pergunta por vez.'
+    );
+  end if;
+
+  if nullif(btrim(persona_style ->> 'tone'), '') is null then
+    errors := errors || jsonb_build_array(
+      'Informe o tom de voz da Persona.'
+    );
+  end if;
+
   return errors;
 exception
   when invalid_text_representation then
@@ -494,7 +751,7 @@ $$;
 
 revoke all on function private.profile_validation_errors(jsonb) from public;
 revoke all on function private.persona_validation_errors(
-  jsonb, jsonb, jsonb, jsonb
+  jsonb, jsonb, jsonb, jsonb, jsonb
 ) from public;
 
 create or replace function private.protect_context_version()
@@ -630,7 +887,8 @@ declare
   factual_version_id uuid;
   behavioral_version_id uuid;
 begin
-  if auth.uid() is null or not private.can_read_context(target_operation_id) then
+  if auth.uid() is null
+    or not private.is_owner_for_operation(target_operation_id) then
     raise exception 'context preparation permission denied' using errcode = '42501';
   end if;
 
@@ -723,6 +981,7 @@ begin
       biography,
       style_rules,
       instructions,
+      protected_rules,
       created_by_user_id
     )
     values (
@@ -734,6 +993,7 @@ begin
       private.context_baseline_biography(),
       private.context_baseline_style(),
       private.context_baseline_instructions(),
+      private.context_protected_rules(),
       auth.uid()
     )
     returning id into behavioral_version_id;
@@ -1092,7 +1352,8 @@ declare
   factual_hash text;
   behavioral_hash text;
 begin
-  if auth.uid() is null or not private.can_read_context(target_operation_id) then
+  if auth.uid() is null
+    or not private.can_validate_context(target_operation_id) then
     raise exception 'context validation permission denied'
       using errcode = '42501';
   end if;
@@ -1134,7 +1395,8 @@ begin
       'identity', persona_version.identity,
       'biography', persona_version.biography,
       'style_rules', persona_version.style_rules,
-      'instructions', persona_version.instructions
+      'instructions', persona_version.instructions,
+      'protected_rules', persona_version.protected_rules
     )
     into behavioral_baseline
     from public.persona_versions as persona_version
@@ -1146,7 +1408,8 @@ begin
     behavioral.identity,
     behavioral.biography,
     behavioral.style_rules,
-    behavioral.instructions
+    behavioral.instructions,
+    behavioral.protected_rules
   );
   factual_hash := encode(
     sha256(convert_to(factual.fields::text, 'UTF8')),
@@ -1159,7 +1422,8 @@ begin
           'identity', behavioral.identity,
           'biography', behavioral.biography,
           'style_rules', behavioral.style_rules,
-          'instructions', behavioral.instructions
+          'instructions', behavioral.instructions,
+          'protected_rules', behavioral.protected_rules
         )::text,
         'UTF8'
       )
@@ -1192,7 +1456,8 @@ begin
         'identity', behavioral.identity,
         'biography', behavioral.biography,
         'style_rules', behavioral.style_rules,
-        'instructions', behavioral.instructions
+        'instructions', behavioral.instructions,
+        'protected_rules', behavioral.protected_rules
       )
     ),
     content_hash = behavioral_hash,
@@ -1260,7 +1525,7 @@ grant execute on function private.validate_context_drafts(
   uuid, uuid, bigint, uuid, bigint, uuid, uuid
 ) to authenticated;
 
-create or replace function private.production_readiness(
+create or replace function private.context_readiness(
   target_operation_id uuid
 )
 returns jsonb
@@ -1271,8 +1536,8 @@ set search_path = ''
 as $$
 declare
   publication public.context_publications%rowtype;
+  behavioral jsonb;
   fields jsonb;
-  identity jsonb;
   errors jsonb := '[]'::jsonb;
   warnings jsonb := '[]'::jsonb;
   optional_key text;
@@ -1294,34 +1559,15 @@ begin
   end if;
 
   fields := publication.factual_snapshot;
-  identity := publication.behavioral_snapshot -> 'identity';
-
-  if nullif(btrim(fields -> 'trade_name' ->> 'value'), '') is null then
-    errors := errors || jsonb_build_array('Informe o nome comercial.');
-  end if;
-  if nullif(btrim(fields -> 'creci_pj' ->> 'value'), '') is null then
-    errors := errors || jsonb_build_array('Informe o CRECI PJ.');
-  end if;
-  if nullif(btrim(fields -> 'creci_uf' ->> 'value'), '') is null then
-    errors := errors || jsonb_build_array('Informe a UF do CRECI PJ.');
-  end if;
-  if nullif(btrim(identity ->> 'full_name'), '') is null then
-    errors := errors || jsonb_build_array(
-      'Informe o nome completo da Persona ativa.'
+  behavioral := publication.behavioral_snapshot;
+  errors := private.profile_validation_errors(fields)
+    || private.persona_validation_errors(
+      behavioral -> 'identity',
+      behavioral -> 'biography',
+      behavioral -> 'style_rules',
+      behavioral -> 'instructions',
+      behavioral -> 'protected_rules'
     );
-  end if;
-  if coalesce((identity ->> 'presents_as_broker')::boolean, false)
-    and nullif(btrim(identity ->> 'creci'), '') is null then
-    errors := errors || jsonb_build_array(
-      'Informe o CRECI da Persona ativa.'
-    );
-  end if;
-  if coalesce((identity ->> 'presents_as_broker')::boolean, false)
-    and nullif(btrim(identity ->> 'creci_uf'), '') is null then
-    errors := errors || jsonb_build_array(
-      'Informe a UF do CRECI da Persona ativa.'
-    );
-  end if;
 
   foreach optional_key in array array[
     'legal_name', 'cnpj', 'address', 'phone', 'website', 'instagram',
@@ -1351,8 +1597,8 @@ exception
 end;
 $$;
 
-revoke all on function private.production_readiness(uuid) from public;
-grant execute on function private.production_readiness(uuid) to authenticated;
+revoke all on function private.context_readiness(uuid)
+  from public, authenticated;
 
 create or replace function private.publish_context(
   target_operation_id uuid,
@@ -1383,7 +1629,8 @@ declare
   baseline_factual public.institutional_profile_versions%rowtype;
   baseline_behavioral public.persona_versions%rowtype;
 begin
-  if auth.uid() is null or not private.can_read_context(target_operation_id) then
+  if auth.uid() is null
+    or not private.can_publish_context(target_operation_id) then
     raise exception 'context publication permission denied'
       using errcode = '42501';
   end if;
@@ -1428,6 +1675,40 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'validation_required');
   end if;
 
+  if jsonb_array_length(
+    private.profile_validation_errors(factual.fields)
+  ) > 0
+    or jsonb_array_length(
+      private.persona_validation_errors(
+        behavioral.identity,
+        behavioral.biography,
+        behavioral.style_rules,
+        behavioral.instructions,
+        behavioral.protected_rules
+      )
+    ) > 0
+    or factual.content_hash <> encode(
+      sha256(convert_to(factual.fields::text, 'UTF8')),
+      'hex'
+    )
+    or behavioral.content_hash <> encode(
+      sha256(
+        convert_to(
+          jsonb_build_object(
+            'identity', behavioral.identity,
+            'biography', behavioral.biography,
+            'style_rules', behavioral.style_rules,
+            'instructions', behavioral.instructions,
+            'protected_rules', behavioral.protected_rules
+          )::text,
+          'UTF8'
+        )
+      ),
+      'hex'
+    ) then
+    return jsonb_build_object('ok', false, 'reason', 'validation_required');
+  end if;
+
   if not actor_is_owner then
     if factual.baseline_version_id is null
       or behavioral.baseline_version_id is null then
@@ -1469,6 +1750,7 @@ begin
       behavioral.biography <> baseline_behavioral.biography
       or behavioral.style_rules <> baseline_behavioral.style_rules
       or behavioral.instructions <> baseline_behavioral.instructions
+      or behavioral.protected_rules <> baseline_behavioral.protected_rules
     ) and not private.has_membership_permission(
       target_operation_id,
       'publish_learning'
@@ -1512,7 +1794,8 @@ begin
     'identity', behavioral.identity,
     'biography', behavioral.biography,
     'style_rules', behavioral.style_rules,
-    'instructions', behavioral.instructions
+    'instructions', behavioral.instructions,
+    'protected_rules', behavioral.protected_rules
   );
   combined_hash := encode(
     sha256(
@@ -1636,11 +1919,22 @@ declare
   factual_id uuid;
   behavioral_id uuid;
 begin
-  if auth.uid() is null or not private.can_read_context(target_operation_id) then
+  if auth.uid() is null
+    or not private.can_validate_context(target_operation_id) then
     raise exception 'context draft permission denied' using errcode = '42501';
   end if;
 
   actor := private.operation_actor(target_operation_id);
+
+  perform operation.id
+  from public.operations as operation
+  where operation.id = target_operation_id
+    and operation.organization_id = actor.organization_id
+  for update;
+
+  if not found then
+    raise exception 'operation not found' using errcode = 'P0002';
+  end if;
 
   if exists (
     select 1
@@ -1703,6 +1997,7 @@ begin
     biography,
     style_rules,
     instructions,
+    protected_rules,
     baseline_version_id,
     created_by_user_id
   )
@@ -1715,6 +2010,7 @@ begin
     published_behavioral.biography,
     published_behavioral.style_rules,
     published_behavioral.instructions,
+    published_behavioral.protected_rules,
     published_behavioral.id,
     auth.uid()
   from public.persona_versions as persona_version
@@ -1761,7 +2057,8 @@ as $$
 declare
   actor public.memberships%rowtype;
 begin
-  if auth.uid() is null or not private.can_read_context(target_operation_id) then
+  if auth.uid() is null
+    or not private.can_validate_context(target_operation_id) then
     raise exception 'context archive permission denied' using errcode = '42501';
   end if;
 
@@ -1819,7 +2116,8 @@ begin
 end;
 $$;
 
-revoke all on function private.production_readiness(uuid) from public;
+revoke all on function private.context_readiness(uuid)
+  from public, authenticated;
 revoke all on function private.publish_context(
   uuid, uuid, bigint, uuid, bigint, uuid, uuid
 ) from public;
@@ -1848,9 +2146,16 @@ set search_path = ''
 as $$
 declare
   actor public.memberships%rowtype;
+  can_coordinate boolean;
+  can_institutional boolean;
+  can_persona boolean;
   result jsonb;
 begin
-  if auth.uid() is null or not private.can_read_context(target_operation_id) then
+  can_institutional := private.can_manage_institutional(target_operation_id);
+  can_persona := private.can_manage_persona(target_operation_id);
+  can_coordinate := can_institutional and can_persona;
+
+  if auth.uid() is null or not (can_institutional or can_persona) then
     raise exception 'context read permission denied' using errcode = '42501';
   end if;
 
@@ -1870,25 +2175,45 @@ begin
         private.has_membership_permission(
           target_operation_id,
           'publish_learning'
-        )
+        ),
+      'can_coordinate_context', can_coordinate,
+      'can_validate_context',
+        private.can_validate_context(target_operation_id),
+      'can_publish_context',
+        private.can_publish_context(target_operation_id)
     ),
     'production_enabled', settings.production_enabled,
-    'readiness', private.production_readiness(target_operation_id),
-    'active_publication', (
-      select jsonb_build_object(
-        'id', publication.id,
-        'publication_number', publication.publication_number,
-        'behavioral_version_id', publication.behavioral_version_id,
-        'factual_version_id', publication.factual_version_id,
-        'behavioral_hash', publication.behavioral_hash,
-        'factual_hash', publication.factual_hash,
-        'combined_hash', publication.combined_hash,
-        'published_by_user_id', publication.published_by_user_id,
-        'published_at', publication.published_at
-      )
-      from public.context_publications as publication
-      where publication.id = settings.active_context_publication_id
-    ),
+    'readiness',
+      case
+        when can_coordinate
+          then private.context_readiness(target_operation_id)
+        else jsonb_build_object(
+          'ready', false,
+          'errors', jsonb_build_array(
+            'A revisão final exige permissões factual e comportamental.'
+          ),
+          'warnings', '[]'::jsonb
+        )
+      end,
+    'active_publication',
+      case
+        when can_coordinate then (
+          select jsonb_build_object(
+            'id', publication.id,
+            'publication_number', publication.publication_number,
+            'behavioral_version_id', publication.behavioral_version_id,
+            'factual_version_id', publication.factual_version_id,
+            'behavioral_hash', publication.behavioral_hash,
+            'factual_hash', publication.factual_hash,
+            'combined_hash', publication.combined_hash,
+            'published_by_user_id', publication.published_by_user_id,
+            'published_at', publication.published_at
+          )
+          from public.context_publications as publication
+          where publication.id = settings.active_context_publication_id
+        )
+        else null
+      end,
     'factual_draft', (
       select jsonb_build_object(
         'id', profile.id,
@@ -1907,6 +2232,7 @@ begin
       where profile.operation_id = target_operation_id
         and profile.organization_id = actor.organization_id
         and profile.status in ('draft', 'validating')
+        and can_institutional
       order by profile.created_at desc
       limit 1
     ),
@@ -1920,6 +2246,7 @@ begin
         'biography', persona_version.biography,
         'style_rules', persona_version.style_rules,
         'instructions', persona_version.instructions,
+        'protected_rules', persona_version.protected_rules,
         'validation_errors', persona_version.validation_errors,
         'diff_snapshot', persona_version.diff_snapshot,
         'content_hash', persona_version.content_hash,
@@ -1932,29 +2259,35 @@ begin
       where persona_version.operation_id = target_operation_id
         and persona_version.organization_id = actor.organization_id
         and persona_version.status in ('draft', 'validating')
+        and can_persona
       order by persona_version.created_at desc
       limit 1
     ),
-    'history', coalesce(
-      (
-        select jsonb_agg(
-          jsonb_build_object(
-            'id', publication.id,
-            'publication_number', publication.publication_number,
-            'behavioral_version_id', publication.behavioral_version_id,
-            'factual_version_id', publication.factual_version_id,
-            'combined_hash', publication.combined_hash,
-            'published_by_user_id', publication.published_by_user_id,
-            'published_at', publication.published_at
+    'history',
+      case
+        when can_coordinate then coalesce(
+          (
+            select jsonb_agg(
+              jsonb_build_object(
+                'id', publication.id,
+                'publication_number', publication.publication_number,
+                'behavioral_version_id', publication.behavioral_version_id,
+                'factual_version_id', publication.factual_version_id,
+                'combined_hash', publication.combined_hash,
+                'published_by_user_id', publication.published_by_user_id,
+                'published_at', publication.published_at
+              )
+              order by publication.publication_number desc
+            )
+            from public.context_publications as publication
+            where publication.operation_id = target_operation_id
+              and publication.organization_id = actor.organization_id
           )
-          order by publication.publication_number desc
+          ,
+          '[]'::jsonb
         )
-        from public.context_publications as publication
-        where publication.operation_id = target_operation_id
-          and publication.organization_id = actor.organization_id
-      ),
-      '[]'::jsonb
-    )
+        else '[]'::jsonb
+      end
   )
   into result
   from public.operation_settings as settings
@@ -1967,114 +2300,6 @@ $$;
 
 revoke all on function private.get_context_workspace(uuid) from public;
 grant execute on function private.get_context_workspace(uuid) to authenticated;
-
-create or replace function private.set_context_production_after_reauthentication(
-  actor_user_id uuid,
-  target_operation_id uuid,
-  enable_production boolean,
-  request_trace_id uuid,
-  request_correlation_id uuid
-)
-returns jsonb
-language plpgsql
-volatile
-security definer
-set search_path = ''
-as $$
-declare
-  owner_membership public.memberships%rowtype;
-  readiness jsonb;
-  before_enabled boolean;
-begin
-  if not private.is_service_role() then
-    raise exception 'service role required' using errcode = '42501';
-  end if;
-
-  select membership.*
-  into strict owner_membership
-  from public.memberships as membership
-  join public.membership_roles as membership_role
-    on membership_role.membership_id = membership.id
-    and membership_role.organization_id = membership.organization_id
-    and membership_role.role = 'owner'
-  join public.membership_operations as membership_operation
-    on membership_operation.membership_id = membership.id
-    and membership_operation.organization_id = membership.organization_id
-    and membership_operation.operation_id = target_operation_id
-  where membership.user_id = actor_user_id
-    and membership.status = 'active';
-
-  select settings.production_enabled
-  into strict before_enabled
-  from public.operation_settings as settings
-  where settings.operation_id = target_operation_id
-    and settings.organization_id = owner_membership.organization_id
-  for update;
-
-  readiness := private.production_readiness(target_operation_id);
-
-  if enable_production and not coalesce((readiness ->> 'ready')::boolean, false) then
-    perform private.append_context_audit(
-      owner_membership.organization_id,
-      target_operation_id,
-      actor_user_id,
-      'context.production_enable_denied',
-      'operation',
-      target_operation_id,
-      jsonb_build_object('production_enabled', before_enabled),
-      readiness,
-      request_trace_id,
-      request_correlation_id
-    );
-    return jsonb_build_object(
-      'ok', false,
-      'reason', 'production_gate',
-      'readiness', readiness
-    );
-  end if;
-
-  update public.operation_settings
-  set
-    production_enabled = enable_production,
-    updated_at = now(),
-    version = version + 1
-  where operation_id = target_operation_id
-    and organization_id = owner_membership.organization_id;
-
-  perform private.append_context_audit(
-    owner_membership.organization_id,
-    target_operation_id,
-    actor_user_id,
-    case
-      when enable_production
-        then 'context.production_enabled'
-      else 'context.production_disabled'
-    end,
-    'operation',
-    target_operation_id,
-    jsonb_build_object('production_enabled', before_enabled),
-    jsonb_build_object(
-      'production_enabled', enable_production,
-      'readiness', readiness
-    ),
-    request_trace_id,
-    request_correlation_id
-  );
-
-  return jsonb_build_object(
-    'ok', true,
-    'production_enabled', enable_production,
-    'readiness', readiness
-  );
-end;
-$$;
-
-revoke all on function private.set_context_production_after_reauthentication(
-  uuid, uuid, boolean, uuid, uuid
-) from public;
-grant execute on function private.set_context_production_after_reauthentication(
-  uuid, uuid, boolean, uuid, uuid
-) to service_role;
 
 create function public.get_context_workspace(target_operation_id uuid)
 returns jsonb
@@ -2250,28 +2475,6 @@ as $$
   );
 $$;
 
-create function public.set_context_production_after_reauthentication(
-  actor_user_id uuid,
-  target_operation_id uuid,
-  enable_production boolean,
-  request_trace_id uuid,
-  request_correlation_id uuid
-)
-returns jsonb
-language sql
-volatile
-security invoker
-set search_path = ''
-as $$
-  select private.set_context_production_after_reauthentication(
-    actor_user_id,
-    target_operation_id,
-    enable_production,
-    request_trace_id,
-    request_correlation_id
-  );
-$$;
-
 revoke all on function public.get_context_workspace(uuid) from public;
 revoke all on function public.initialize_context_drafts(uuid, uuid, uuid)
   from public;
@@ -2292,10 +2495,6 @@ revoke all on function public.create_context_drafts(uuid, uuid, uuid)
 revoke all on function public.archive_context_drafts(
   uuid, uuid, uuid, uuid, uuid
 ) from public;
-revoke all on function public.set_context_production_after_reauthentication(
-  uuid, uuid, boolean, uuid, uuid
-) from public;
-
 grant execute on function public.get_context_workspace(uuid) to authenticated;
 grant execute on function public.initialize_context_drafts(uuid, uuid, uuid)
   to authenticated;
@@ -2316,14 +2515,10 @@ grant execute on function public.create_context_drafts(uuid, uuid, uuid)
 grant execute on function public.archive_context_drafts(
   uuid, uuid, uuid, uuid, uuid
 ) to authenticated;
-grant execute on function public.set_context_production_after_reauthentication(
-  uuid, uuid, boolean, uuid, uuid
-) to service_role;
-
 comment on table public.institutional_profile_versions is
   'Versões factuais do perfil institucional. Cada campo conserva fonte, conferência, validade e divulgação.';
 comment on table public.persona_versions is
-  'Versões comportamentais imutáveis após publicação: identidade, biografia, estilo e instruções.';
+  'Versões comportamentais imutáveis após publicação: identidade, biografia, estilo, instruções e regras críticas protegidas.';
 comment on table public.context_publications is
   'Publicação transacional que vincula exatamente uma versão comportamental e uma factual.';
 comment on column public.institutional_profile_versions.fields is

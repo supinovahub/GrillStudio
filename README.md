@@ -15,7 +15,8 @@ A fundação executável inclui a PWA em Next.js 16, Auth SSR, o shell autentica
 da Operação, convites e aprovação de Membros, papéis cumulativos, permissões de
 Gestor, perfil institucional e Contexto inicial versionado, isolamento por RLS,
 proteção de ambiente e observabilidade básica. Modo produção nasce desligado e
-só pode ser habilitado pelo Dono depois de uma publicação válida.
+permanece fora do escopo do slice de Contexto; sua ativação será implementada
+em ticket posterior, depois dos gates correspondentes.
 
 ## Ambientes e execução por agentes
 

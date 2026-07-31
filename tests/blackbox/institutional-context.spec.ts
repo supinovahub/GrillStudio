@@ -17,6 +17,9 @@ const suffix = randomUUID().slice(0, 8);
 const password = `Preview-${randomUUID()}-A1!`;
 const ownerEmail = `context-owner-${suffix}@example.com`;
 const managerEmail = `context-manager-${suffix}@example.com`;
+const knowledgeOnlyEmail = `context-knowledge-${suffix}@example.com`;
+const trainingOnlyEmail = `context-training-${suffix}@example.com`;
+const learningOnlyEmail = `context-learning-${suffix}@example.com`;
 const brokerEmail = `context-broker-${suffix}@example.com`;
 const pendingEmail = `context-pending-${suffix}@example.com`;
 const outsiderEmail = `context-outsider-${suffix}@example.com`;
@@ -24,6 +27,9 @@ const outsiderEmail = `context-outsider-${suffix}@example.com`;
 let admin: SupabaseClient<Database>;
 let owner: SupabaseClient<Database>;
 let manager: SupabaseClient<Database>;
+let knowledgeOnly: SupabaseClient<Database>;
+let trainingOnly: SupabaseClient<Database>;
+let learningOnly: SupabaseClient<Database>;
 let broker: SupabaseClient<Database>;
 let pending: SupabaseClient<Database>;
 let outsider: SupabaseClient<Database>;
@@ -31,11 +37,15 @@ let database: Sql;
 let ownerId = "";
 let managerId = "";
 let organizationId = "";
+let outsiderOrganizationId = "";
 let operationId = "";
+let outsiderOperationId = "";
 let factualVersionId = "";
 let behavioralVersionId = "";
 let publishedFactualVersion = 0;
 let publishedBehavioralVersion = 0;
+let protectedRules: Json = {};
+const syntheticUserIds: string[] = [];
 
 test.describe.configure({ mode: "serial" });
 
@@ -61,7 +71,9 @@ async function createSyntheticUser(email: string) {
     password,
   });
   expect(result.error).toBeNull();
-  return result.data.user!.id;
+  const userId = result.data.user!.id;
+  syntheticUserIds.push(userId);
+  return userId;
 }
 
 async function signedInClient(email: string) {
@@ -168,6 +180,9 @@ test.beforeAll(async () => {
 
   ownerId = await createSyntheticUser(ownerEmail);
   managerId = await createSyntheticUser(managerEmail);
+  const knowledgeOnlyId = await createSyntheticUser(knowledgeOnlyEmail);
+  const trainingOnlyId = await createSyntheticUser(trainingOnlyEmail);
+  const learningOnlyId = await createSyntheticUser(learningOnlyEmail);
   const brokerId = await createSyntheticUser(brokerEmail);
   const pendingId = await createSyntheticUser(pendingEmail);
   const outsiderId = await createSyntheticUser(outsiderEmail);
@@ -176,10 +191,13 @@ test.beforeAll(async () => {
   operationId = randomUUID();
   const ownerMembershipId = randomUUID();
   const managerMembershipId = randomUUID();
+  const knowledgeOnlyMembershipId = randomUUID();
+  const trainingOnlyMembershipId = randomUUID();
+  const learningOnlyMembershipId = randomUUID();
   const brokerMembershipId = randomUUID();
   const pendingMembershipId = randomUUID();
-  const outsiderOrganizationId = randomUUID();
-  const outsiderOperationId = randomUUID();
+  outsiderOrganizationId = randomUUID();
+  outsiderOperationId = randomUUID();
   const outsiderMembershipId = randomUUID();
 
   await insertFixture("organizations", {
@@ -210,6 +228,24 @@ test.beforeAll(async () => {
       role: "manager",
       status: "active",
       user_id: managerId,
+    },
+    {
+      id: knowledgeOnlyMembershipId,
+      role: "manager",
+      status: "active",
+      user_id: knowledgeOnlyId,
+    },
+    {
+      id: trainingOnlyMembershipId,
+      role: "manager",
+      status: "active",
+      user_id: trainingOnlyId,
+    },
+    {
+      id: learningOnlyMembershipId,
+      role: "manager",
+      status: "active",
+      user_id: learningOnlyId,
     },
     {
       id: brokerMembershipId,
@@ -248,6 +284,19 @@ test.beforeAll(async () => {
     });
   }
 
+  for (const [membershipId, permission] of [
+    [knowledgeOnlyMembershipId, "publish_knowledge"],
+    [trainingOnlyMembershipId, "train_pedro"],
+    [learningOnlyMembershipId, "publish_learning"],
+  ] as const) {
+    await insertFixture("membership_permissions", {
+      granted_by_user_id: ownerId,
+      membership_id: membershipId,
+      organization_id: organizationId,
+      permission,
+    });
+  }
+
   await insertFixture("organizations", {
     id: outsiderOrganizationId,
     name: `Imobiliária Externa ${suffix}`,
@@ -278,12 +327,70 @@ test.beforeAll(async () => {
 
   owner = await signedInClient(ownerEmail);
   manager = await signedInClient(managerEmail);
+  knowledgeOnly = await signedInClient(knowledgeOnlyEmail);
+  trainingOnly = await signedInClient(trainingOnlyEmail);
+  learningOnly = await signedInClient(learningOnlyEmail);
   broker = await signedInClient(brokerEmail);
   pending = await signedInClient(pendingEmail);
   outsider = await signedInClient(outsiderEmail);
 });
 
+test.afterAll(async () => {
+  if (database && organizationId && outsiderOrganizationId) {
+    await database.begin(async (transaction) => {
+      await transaction`set local session_replication_role = replica`;
+      await transaction`
+        delete from public.context_publications
+        where organization_id in (${organizationId}, ${outsiderOrganizationId})
+      `;
+      await transaction`
+        delete from public.persona_versions
+        where organization_id in (${organizationId}, ${outsiderOrganizationId})
+      `;
+      await transaction`
+        delete from public.institutional_profile_versions
+        where organization_id in (${organizationId}, ${outsiderOrganizationId})
+      `;
+      await transaction`set local session_replication_role = origin`;
+    });
+  }
+  for (const targetOperationId of [operationId, outsiderOperationId]) {
+    if (!targetOperationId) {
+      continue;
+    }
+    await admin
+      ?.from("membership_operations")
+      .delete()
+      .eq("operation_id", targetOperationId);
+    await admin?.from("system_pauses").delete().eq("operation_id", targetOperationId);
+    await admin
+      ?.from("operation_settings")
+      .delete()
+      .eq("operation_id", targetOperationId);
+    await admin?.from("operations").delete().eq("id", targetOperationId);
+  }
+  for (const userId of syntheticUserIds) {
+    await admin?.auth.admin.deleteUser(userId);
+  }
+  for (const targetOrganizationId of [
+    organizationId,
+    outsiderOrganizationId,
+  ]) {
+    if (targetOrganizationId) {
+      await admin?.from("organizations").delete().eq("id", targetOrganizationId);
+    }
+  }
+  await database?.end({ timeout: 5 });
+});
+
 test("Dono prepares a fact-free initial package and RLS isolates Context", async () => {
+  const managerAttempt = await manager.rpc("initialize_context_drafts", {
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+  });
+  expect(managerAttempt.error?.code).toBe("42501");
+
   const initialized = await owner.rpc("initialize_context_drafts", {
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
@@ -310,6 +417,11 @@ test("Dono prepares a fact-free initial package and RLS isolates Context", async
     rpcObject(behavioral.style_rules as Json)
       .never_invent_personal_experience,
   ).toBe(true);
+  protectedRules = behavioral.protected_rules as Json;
+  expect(rpcObject(protectedRules).direct_ai_question).toEqual({
+    action: "silent_escalation",
+    send_reply: false,
+  });
 
   const managerRead = await manager
     .from("persona_versions")
@@ -334,6 +446,190 @@ test("Dono prepares a fact-free initial package and RLS isolates Context", async
   );
   const anonymousRead = await anonymous.from("persona_versions").select("id");
   expect(anonymousRead.error?.code).toBe("42501");
+});
+
+test("isolated Gestor permissions expose only their domain and deny combined RPCs", async () => {
+  const cases = [
+    {
+      client: knowledgeOnly,
+      factualRows: 1,
+      personaRows: 0,
+      workspaceKey: "factual_draft",
+    },
+    {
+      client: trainingOnly,
+      factualRows: 0,
+      personaRows: 1,
+      workspaceKey: "behavioral_draft",
+    },
+    {
+      client: learningOnly,
+      factualRows: 0,
+      personaRows: 1,
+      workspaceKey: "behavioral_draft",
+    },
+  ] as const;
+
+  for (const entry of cases) {
+    const factualRead = await entry.client
+      .from("institutional_profile_versions")
+      .select("id")
+      .eq("operation_id", operationId);
+    const personaRead = await entry.client
+      .from("persona_versions")
+      .select("id")
+      .eq("operation_id", operationId);
+    const publicationRead = await entry.client
+      .from("context_publications")
+      .select("id")
+      .eq("operation_id", operationId);
+    expect(factualRead.error).toBeNull();
+    expect(factualRead.data).toHaveLength(entry.factualRows);
+    expect(personaRead.error).toBeNull();
+    expect(personaRead.data).toHaveLength(entry.personaRows);
+    expect(publicationRead.error).toBeNull();
+    expect(publicationRead.data).toEqual([]);
+
+    const workspace = await contextWorkspace(entry.client);
+    expect(workspace[entry.workspaceKey]).not.toBeNull();
+    expect(
+      workspace[
+        entry.workspaceKey === "factual_draft"
+          ? "behavioral_draft"
+          : "factual_draft"
+      ],
+    ).toBeNull();
+    expect(workspace.active_publication).toBeNull();
+    expect(workspace.history).toEqual([]);
+  }
+
+  const deniedPersona = await knowledgeOnly.rpc("save_persona_draft", {
+    expected_version: 1,
+    persona_biography: {},
+    persona_identity: {},
+    persona_instructions: {},
+    persona_style_rules: {},
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_version_id: behavioralVersionId,
+  });
+  expect(deniedPersona.error?.code).toBe("42501");
+
+  const deniedFacts = await trainingOnly.rpc(
+    "save_institutional_profile_draft",
+    {
+      expected_version: 1,
+      profile_fields: {},
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+      target_version_id: factualVersionId,
+    },
+  );
+  expect(deniedFacts.error?.code).toBe("42501");
+
+  const deniedLearningSave = await learningOnly.rpc("save_persona_draft", {
+    expected_version: 1,
+    persona_biography: {},
+    persona_identity: {},
+    persona_instructions: {},
+    persona_style_rules: {},
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_version_id: behavioralVersionId,
+  });
+  expect(deniedLearningSave.error?.code).toBe("42501");
+
+  for (const client of [knowledgeOnly, trainingOnly]) {
+    const deniedValidation = await client.rpc("validate_context_drafts", {
+      behavioral_expected_version: 1,
+      behavioral_version_id: behavioralVersionId,
+      factual_expected_version: 1,
+      factual_version_id: factualVersionId,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+    });
+    expect(deniedValidation.error?.code).toBe("42501");
+  }
+
+  const deniedPublication = await learningOnly.rpc("publish_context", {
+    behavioral_expected_version: 1,
+    behavioral_version_id: behavioralVersionId,
+    factual_expected_version: 1,
+    factual_version_id: factualVersionId,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+  });
+  expect(deniedPublication.error?.code).toBe("42501");
+});
+
+test("composite baselines and publication FKs reject cross-operation references", async () => {
+  const crossFactual = await admin.from("institutional_profile_versions").insert({
+    baseline_version_id: factualVersionId,
+    created_by_user_id: ownerId,
+    fields: {},
+    operation_id: outsiderOperationId,
+    organization_id: outsiderOrganizationId,
+    version_number: 1,
+  });
+  expect(crossFactual.error?.code).toBe("23503");
+
+  const outsiderPersonaId = randomUUID();
+  await insertFixture("personas", {
+    created_by_user_id: ownerId,
+    id: outsiderPersonaId,
+    internal_name: `Persona externa ${suffix}`,
+    operation_id: outsiderOperationId,
+    organization_id: outsiderOrganizationId,
+  });
+  const crossBehavioral = await admin.from("persona_versions").insert({
+    baseline_version_id: behavioralVersionId,
+    created_by_user_id: ownerId,
+    operation_id: outsiderOperationId,
+    organization_id: outsiderOrganizationId,
+    persona_id: outsiderPersonaId,
+    version_number: 1,
+  });
+  expect(crossBehavioral.error?.code).toBe("23503");
+
+  const crossPublication = await admin.from("context_publications").insert({
+    behavioral_hash: "a".repeat(64),
+    behavioral_snapshot: {},
+    behavioral_version_id: behavioralVersionId,
+    combined_hash: "c".repeat(64),
+    factual_hash: "b".repeat(64),
+    factual_snapshot: {},
+    factual_version_id: factualVersionId,
+    operation_id: outsiderOperationId,
+    organization_id: outsiderOrganizationId,
+    publication_number: 1,
+    published_by_user_id: ownerId,
+  });
+  expect(crossPublication.error?.code).toBe("23503");
+
+  const indexes = await database<{ indexname: string }[]>`
+    select indexname
+    from pg_indexes
+    where schemaname = 'public'
+      and indexname in (
+        'institutional_profile_versions_baseline_idx',
+        'persona_versions_baseline_idx',
+        'context_publications_behavioral_version_idx',
+        'context_publications_factual_version_idx',
+        'operation_settings_active_context_publication_idx'
+      )
+  `;
+  expect(indexes.map((index) => index.indexname).sort()).toEqual([
+    "context_publications_behavioral_version_idx",
+    "context_publications_factual_version_idx",
+    "institutional_profile_versions_baseline_idx",
+    "operation_settings_active_context_publication_idx",
+    "persona_versions_baseline_idx",
+  ]);
 });
 
 test("Gestor prepares style but cannot change identity", async () => {
@@ -375,6 +671,12 @@ test("validation reports required institutional and professional facts", async (
   const workspace = await contextWorkspace(owner);
   const factual = rpcObject(workspace.factual_draft as Json);
   const behavioral = rpcObject(workspace.behavioral_draft as Json);
+  const tampered = await admin
+    .from("persona_versions")
+    .update({ protected_rules: {} })
+    .eq("id", behavioral.id as string);
+  expect(tampered.error).toBeNull();
+
   const validation = await owner.rpc("validate_context_drafts", {
     behavioral_expected_version: behavioral.version as number,
     behavioral_version_id: behavioral.id as string,
@@ -400,21 +702,27 @@ test("validation reports required institutional and professional facts", async (
       "Informe o nome completo da Persona.",
       "Informe o CRECI da Persona que se apresenta como Corretor.",
       "Informe a UF do CRECI da Persona.",
+      "As regras críticas protegidas da Persona foram alteradas.",
     ]),
   );
 
-  const blocked = await admin.rpc(
-    "set_context_production_after_reauthentication",
-    {
-      actor_user_id: ownerId,
-      enable_production: true,
-      request_correlation_id: randomUUID(),
-      request_trace_id: randomUUID(),
-      target_operation_id: operationId,
-    },
-  );
+  const blocked = await owner.rpc("publish_context", {
+    behavioral_expected_version: result.behavioral_version as number,
+    behavioral_version_id: behavioral.id as string,
+    factual_expected_version: result.factual_version as number,
+    factual_version_id: factual.id as string,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+  });
   expect(blocked.error).toBeNull();
-  expect(rpcObject(blocked.data).reason).toBe("production_gate");
+  expect(rpcObject(blocked.data).reason).toBe("validation_required");
+
+  const restored = await admin
+    .from("persona_versions")
+    .update({ protected_rules: protectedRules })
+    .eq("id", behavioral.id as string);
+  expect(restored.error).toBeNull();
 });
 
 test("Dono publishes separate immutable factual and behavioral versions", async () => {
@@ -474,6 +782,29 @@ test("Dono publishes separate immutable factual and behavioral versions", async 
   behavioral = rpcObject(workspace.behavioral_draft as Json);
   publishedFactualVersion = factual.version as number;
   publishedBehavioralVersion = behavioral.version as number;
+
+  const tamperedAfterValidation = await admin
+    .from("persona_versions")
+    .update({ protected_rules: {} })
+    .eq("id", behavioral.id as string);
+  expect(tamperedAfterValidation.error).toBeNull();
+  const rejectedTamper = await owner.rpc("publish_context", {
+    behavioral_expected_version: publishedBehavioralVersion,
+    behavioral_version_id: behavioral.id as string,
+    factual_expected_version: publishedFactualVersion,
+    factual_version_id: factual.id as string,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+  });
+  expect(rejectedTamper.error).toBeNull();
+  expect(rpcObject(rejectedTamper.data).reason).toBe("validation_required");
+  const restoredAfterValidation = await admin
+    .from("persona_versions")
+    .update({ protected_rules: protectedRules })
+    .eq("id", behavioral.id as string);
+  expect(restoredAfterValidation.error).toBeNull();
+
   const publication = await owner.rpc("publish_context", {
     behavioral_expected_version: publishedBehavioralVersion,
     behavioral_version_id: behavioral.id as string,
@@ -535,48 +866,59 @@ test("published versions reject mutation and the supported attempt is audited", 
   );
 });
 
-test("only the reauthenticated Dono boundary enables production from published facts", async () => {
-  const enabled = await admin.rpc(
-    "set_context_production_after_reauthentication",
+test("T03 exposes no production mutator and leaves production disabled", async () => {
+  const session = await owner.auth.getSession();
+  expect(session.data.session?.access_token).toBeTruthy();
+  const response = await fetch(
+    `${requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL")}/rest/v1/rpc/set_context_production_after_reauthentication`,
     {
-      actor_user_id: ownerId,
-      enable_production: true,
-      request_correlation_id: randomUUID(),
-      request_trace_id: randomUUID(),
-      target_operation_id: operationId,
+      body: JSON.stringify({ target_operation_id: operationId }),
+      headers: {
+        apikey: requiredEnvironment("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
+        authorization: `Bearer ${session.data.session!.access_token}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
     },
   );
-  expect(enabled.error).toBeNull();
-  expect(rpcObject(enabled.data).ok).toBe(true);
+  expect(response.status).toBe(404);
 
-  const managerAttempt = await admin.rpc(
-    "set_context_production_after_reauthentication",
-    {
-      actor_user_id: managerId,
-      enable_production: false,
-      request_correlation_id: randomUUID(),
-      request_trace_id: randomUUID(),
-      target_operation_id: operationId,
-    },
-  );
-  expect(managerAttempt.error?.code).toBe("P0002");
-
+  const [functionState] = await database<{ rpc_exists: boolean }[]>`
+    select to_regprocedure(
+      'public.set_context_production_after_reauthentication(uuid,uuid,boolean,uuid,uuid)'
+    ) is not null as rpc_exists
+  `;
+  expect(functionState?.rpc_exists).toBe(false);
   const settings = await admin
     .from("operation_settings")
     .select("production_enabled")
     .eq("operation_id", operationId)
     .single();
-  expect(settings.data?.production_enabled).toBe(true);
+  expect(settings.data?.production_enabled).toBe(false);
 });
 
 test("Gestor with published-learning permission can publish style without changing identity", async () => {
-  const created = await manager.rpc("create_context_drafts", {
-    request_correlation_id: randomUUID(),
-    request_trace_id: randomUUID(),
-    target_operation_id: operationId,
-  });
-  expect(created.error).toBeNull();
-  expect(rpcObject(created.data).ok).toBe(true);
+  const creations = await Promise.all(
+    [owner, manager].map((client) =>
+      client.rpc("create_context_drafts", {
+        request_correlation_id: randomUUID(),
+        request_trace_id: randomUUID(),
+        target_operation_id: operationId,
+      }),
+    ),
+  );
+  expect(creations.every((creation) => creation.error === null)).toBe(true);
+  const creationResults = creations.map((creation) =>
+    rpcObject(creation.data),
+  );
+  expect(creationResults.filter((result) => result.ok === true)).toHaveLength(
+    1,
+  );
+  expect(creationResults).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ reason: "draft_already_exists" }),
+    ]),
+  );
 
   let workspace = await contextWorkspace(manager);
   let factual = rpcObject(workspace.factual_draft as Json);
@@ -637,6 +979,62 @@ test("Gestor with published-learning permission can publish style without changi
   );
 });
 
+test("readiness revalidates source and validity from the active published snapshot", async () => {
+  const workspace = await contextWorkspace(owner);
+  const active = rpcObject(workspace.active_publication as Json);
+  const publication = await admin
+    .from("context_publications")
+    .select("*")
+    .eq("id", active.id as string)
+    .single();
+  expect(publication.error).toBeNull();
+  expect(publication.data).not.toBeNull();
+
+  const expiredSnapshot = structuredClone(
+    publication.data!.factual_snapshot,
+  ) as Record<string, Json | undefined>;
+  const tradeName = rpcObject(expiredSnapshot.trade_name as Json);
+  expiredSnapshot.trade_name = {
+    ...tradeName,
+    valid_until: "2000-01-01",
+  };
+
+  const invalidPublicationId = randomUUID();
+  const inserted = await admin.from("context_publications").insert({
+    behavioral_hash: publication.data!.behavioral_hash,
+    behavioral_snapshot: publication.data!.behavioral_snapshot,
+    behavioral_version_id: publication.data!.behavioral_version_id,
+    combined_hash: publication.data!.combined_hash,
+    factual_hash: publication.data!.factual_hash,
+    factual_snapshot: expiredSnapshot,
+    factual_version_id: publication.data!.factual_version_id,
+    id: invalidPublicationId,
+    operation_id: operationId,
+    organization_id: organizationId,
+    publication_number: 999,
+    published_by_user_id: ownerId,
+  });
+  expect(inserted.error).toBeNull();
+  const pointedToExpired = await admin
+    .from("operation_settings")
+    .update({ active_context_publication_id: invalidPublicationId })
+    .eq("operation_id", operationId);
+  expect(pointedToExpired.error).toBeNull();
+
+  const invalidWorkspace = await contextWorkspace(owner);
+  const readiness = rpcObject(invalidWorkspace.readiness as Json);
+  expect(readiness.ready).toBe(false);
+  expect(readiness.errors).toEqual(
+    expect.arrayContaining(["A validade de trade_name está vencida."]),
+  );
+
+  const restored = await admin
+    .from("operation_settings")
+    .update({ active_context_publication_id: active.id as string })
+    .eq("operation_id", operationId);
+  expect(restored.error).toBeNull();
+});
+
 test("Dono sees the functional Context slice in the PWA", async ({ page }) => {
   await page.goto("/entrar?next=%2Fapp%2Fpedro%2Fpersonas");
   await page.getByLabel("E-mail").fill(ownerEmail);
@@ -653,6 +1051,12 @@ test("Dono sees the functional Context slice in the PWA", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Contexto obrigatório completo" }),
   ).toBeVisible();
+  await expect(
+    page.getByText("T03 não habilita nem desliga a IA em produção."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Habilitar IA em produção" }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Criar nova versão" }).click();
   await expect(page.getByText("Nova versão criada")).toBeVisible();
   await expect(

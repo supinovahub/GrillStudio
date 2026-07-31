@@ -9,7 +9,6 @@ import {
   publishContextAction,
   saveInstitutionalDraftAction,
   savePersonaDraftAction,
-  setContextProductionAction,
   validateContextAction,
 } from "@/lib/context/actions";
 import { getContextWorkspace } from "@/lib/context/queries";
@@ -40,12 +39,6 @@ const statusMessages: Record<string, string> = {
   "persona-negada": "A Persona não pôde ser salva com a sua autoridade atual.",
   "persona-salva": "Identidade, biografia e estilo salvos como rascunho.",
   "preparo-negado": "Você não pode preparar o Contexto desta Operação.",
-  "producao-bloqueada":
-    "Modo produção permanece desligado. Resolva os bloqueios publicados.",
-  "producao-confirmacao-obrigatoria":
-    "Confirme o impacto e informe sua senha.",
-  "producao-desligada": "Modo produção desligado.",
-  "producao-habilitada": "Modo produção habilitado pelo Dono.",
   "publicacao-negada":
     "A publicação foi negada. Valide o diff e confira sua autoridade.",
   "rascunho-arquivado": "Rascunho arquivado sem alterar a versão publicada.",
@@ -68,7 +61,51 @@ function flag(value: Json | undefined): boolean {
   return value === true;
 }
 
-function DraftIds({
+function FactualDraftIds({
+  factual,
+  operationId,
+}: {
+  factual: FactualDraft;
+  operationId: string;
+}) {
+  return (
+    <>
+      <input name="operation_id" type="hidden" value={operationId} />
+      <input name="factual_version_id" type="hidden" value={factual.id} />
+      <input
+        name="factual_expected_version"
+        type="hidden"
+        value={factual.version}
+      />
+    </>
+  );
+}
+
+function BehavioralDraftIds({
+  behavioral,
+  operationId,
+}: {
+  behavioral: BehavioralDraft;
+  operationId: string;
+}) {
+  return (
+    <>
+      <input name="operation_id" type="hidden" value={operationId} />
+      <input
+        name="behavioral_version_id"
+        type="hidden"
+        value={behavioral.id}
+      />
+      <input
+        name="behavioral_expected_version"
+        type="hidden"
+        value={behavioral.version}
+      />
+    </>
+  );
+}
+
+function CombinedDraftIds({
   behavioral,
   factual,
   operationId,
@@ -79,17 +116,7 @@ function DraftIds({
 }) {
   return (
     <>
-      <input name="operation_id" type="hidden" value={operationId} />
-      <input
-        name="factual_version_id"
-        type="hidden"
-        value={factual.id}
-      />
-      <input
-        name="factual_expected_version"
-        type="hidden"
-        value={factual.version}
-      />
+      <FactualDraftIds factual={factual} operationId={operationId} />
       <input
         name="behavioral_version_id"
         type="hidden"
@@ -229,7 +256,9 @@ export default async function PersonaContextPage({
                   : "context-production-status"
               }
             >
-              Produção {context.production_enabled ? "habilitada" : "desligada"}
+              Estado operacional ·{" "}
+              {context.production_enabled ? "habilitado" : "desligado"} ·
+              somente leitura
             </span>
           </div>
         </header>
@@ -240,7 +269,7 @@ export default async function PersonaContextPage({
           </div>
         ) : null}
 
-        {!factual || !behavioral ? (
+        {!factual && !behavioral ? (
           <section className="empty-state context-empty">
             <p className="eyebrow">
               {context.active_publication ? "Nova versão" : "Primeiro acesso"}
@@ -255,42 +284,53 @@ export default async function PersonaContextPage({
                 ? "Crie rascunhos clonados para propor mudanças sem editar o histórico."
                 : "O pacote inclui somente regras e estilo aprovados. CRECI, experiência e fatos da Operação começam vazios."}
             </p>
-            <form
-              action={
-                context.active_publication
-                  ? createContextDraftAction
-                  : initializeContextAction
-              }
-            >
-              <input
-                name="operation_id"
-                type="hidden"
-                value={workspace.operation_id}
-              />
-              <button className="primary-button" type="submit">
-                {context.active_publication
-                  ? "Criar nova versão"
-                  : "Preparar pacote inicial"}
-              </button>
-            </form>
+            {(context.active_publication &&
+              context.actor.can_validate_context) ||
+            (!context.active_publication && context.actor.is_owner) ? (
+              <form
+                action={
+                  context.active_publication
+                    ? createContextDraftAction
+                    : initializeContextAction
+                }
+              >
+                <input
+                  name="operation_id"
+                  type="hidden"
+                  value={workspace.operation_id}
+                />
+                <button className="primary-button" type="submit">
+                  {context.active_publication
+                    ? "Criar nova versão"
+                    : "Preparar pacote inicial"}
+                </button>
+              </form>
+            ) : (
+              <p className="context-permission-note">
+                Sua permissão libera somente o domínio designado. O Dono ou
+                um Gestor com as duas permissões prepara o pacote combinado.
+              </p>
+            )}
           </section>
         ) : (
           <>
             <section className="context-version-strip">
-              <VersionBadge draft={factual} label="Factual" />
-              <VersionBadge draft={behavioral} label="Comportamental" />
+              {factual ? <VersionBadge draft={factual} label="Factual" /> : null}
+              {behavioral ? (
+                <VersionBadge draft={behavioral} label="Comportamental" />
+              ) : null}
               <span>
                 Uma publicação une os dois IDs, mas cada versão conserva seu
                 próprio conteúdo e hash.
               </span>
             </section>
 
-            <form
+            {factual ? (
+              <form
               action={saveInstitutionalDraftAction}
               className="context-editor institutional-editor"
             >
-              <DraftIds
-                behavioral={behavioral}
+              <FactualDraftIds
                 factual={factual}
                 operationId={workspace.operation_id}
               />
@@ -396,15 +436,16 @@ export default async function PersonaContextPage({
                   );
                 })}
               </div>
-            </form>
+              </form>
+            ) : null}
 
-            <form
+            {behavioral ? (
+              <form
               action={savePersonaDraftAction}
               className="context-editor persona-editor"
             >
-              <DraftIds
+              <BehavioralDraftIds
                 behavioral={behavioral}
-                factual={factual}
                 operationId={workspace.operation_id}
               />
               <input
@@ -587,12 +628,24 @@ export default async function PersonaContextPage({
                   <span>Nunca inventar experiência pessoal</span>
                   <span>Escalonamento silencioso quando obrigatório</span>
                 </div>
+                <details>
+                  <summary>Ver regras críticas protegidas</summary>
+                  <p className="context-permission-note">
+                    Estas regras são separadas do texto editável e não podem
+                    ser removidas pelo editor da Persona.
+                  </p>
+                  <pre>
+                    {JSON.stringify(behavioral.protected_rules, null, 2)}
+                  </pre>
+                </details>
               </div>
-            </form>
+              </form>
+            ) : null}
 
-            <ValidationBlock behavioral={behavioral} factual={factual} />
-
-            <section className="context-actions">
+            {factual && behavioral ? (
+              <>
+                <ValidationBlock behavioral={behavioral} factual={factual} />
+                <section className="context-actions">
               <div>
                 <p className="eyebrow">Fluxo de publicação</p>
                 <h2>Validar, revisar o diff e decidir</h2>
@@ -603,17 +656,21 @@ export default async function PersonaContextPage({
               </div>
               <div className="context-action-buttons">
                 <form action={validateContextAction}>
-                  <DraftIds
+                  <CombinedDraftIds
                     behavioral={behavioral}
                     factual={factual}
                     operationId={workspace.operation_id}
                   />
-                  <button className="secondary-button" type="submit">
+                  <button
+                    className="secondary-button"
+                    disabled={!context.actor.can_validate_context}
+                    type="submit"
+                  >
                     Validar e gerar diff
                   </button>
                 </form>
                 <form action={publishContextAction}>
-                  <DraftIds
+                  <CombinedDraftIds
                     behavioral={behavioral}
                     factual={factual}
                     operationId={workspace.operation_id}
@@ -624,7 +681,8 @@ export default async function PersonaContextPage({
                       behavioral.status !== "validating" ||
                       factual.status !== "validating" ||
                       behavioral.validation_errors.length > 0 ||
-                      factual.validation_errors.length > 0
+                      factual.validation_errors.length > 0 ||
+                      !context.actor.can_publish_context
                     }
                     type="submit"
                   >
@@ -632,31 +690,49 @@ export default async function PersonaContextPage({
                   </button>
                 </form>
                 <form action={archiveContextDraftAction}>
-                  <DraftIds
+                  <CombinedDraftIds
                     behavioral={behavioral}
                     factual={factual}
                     operationId={workspace.operation_id}
                   />
-                  <button className="text-button danger" type="submit">
+                  <button
+                    className="text-button danger"
+                    disabled={!context.actor.can_validate_context}
+                    type="submit"
+                  >
                     Arquivar rascunhos
                   </button>
                 </form>
               </div>
-            </section>
+                </section>
+              </>
+            ) : (
+              <section className="context-actions">
+                <div>
+                  <p className="eyebrow">Menor privilégio</p>
+                  <h2>Você está vendo somente o domínio autorizado</h2>
+                  <p>
+                    A validação e a publicação combinadas exigem as permissões
+                    factual e comportamental correspondentes.
+                  </p>
+                </div>
+              </section>
+            )}
           </>
         )}
 
         <section className="context-readiness">
           <div>
-            <p className="eyebrow">Portão de produção</p>
+            <p className="eyebrow">Prontidão do Contexto</p>
             <h2>
               {context.readiness.ready
                 ? "Contexto obrigatório completo"
-                : "Produção continua bloqueada"}
+                : "Contexto ainda incompleto"}
             </h2>
             <p>
-              O portão consulta somente a publicação ativa. Campos opcionais
-              geram alertas, não bloqueios.
+              Esta leitura revalida a publicação ativa, inclusive fonte,
+              confirmação e validade dos fatos. Campos opcionais geram
+              alertas, não bloqueios.
             </p>
           </div>
           <div className="context-readiness-columns">
@@ -685,52 +761,11 @@ export default async function PersonaContextPage({
               )}
             </div>
           </div>
-          {context.actor.is_owner ? (
-            <form
-              action={setContextProductionAction}
-              className="context-production-form"
-            >
-              <input
-                name="operation_id"
-                type="hidden"
-                value={workspace.operation_id}
-              />
-              <input
-                name="enable_production"
-                type="hidden"
-                value={context.production_enabled ? "false" : "true"}
-              />
-              <label>
-                Confirme sua senha
-                <input
-                  autoComplete="current-password"
-                  name="password"
-                  required
-                  type="password"
-                />
-              </label>
-              <label className="persona-check">
-                <input name="confirmation" required type="checkbox" />
-                Entendo que esta ação altera o atendimento autônomo da Operação
-              </label>
-              <button
-                className={
-                  context.production_enabled
-                    ? "secondary-button"
-                    : "primary-button"
-                }
-                type="submit"
-              >
-                {context.production_enabled
-                  ? "Desligar IA em produção"
-                  : "Habilitar IA em produção"}
-              </button>
-            </form>
-          ) : (
-            <p className="context-permission-note">
-              Somente o Dono habilita ou desliga o Modo produção.
-            </p>
-          )}
+          <p className="context-permission-note">
+            T03 não habilita nem desliga a IA em produção. O estado operacional
+            acima é somente leitura e será controlado por um ticket posterior,
+            depois dos demais gates.
+          </p>
         </section>
 
         <section className="context-history">

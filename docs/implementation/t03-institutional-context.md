@@ -7,7 +7,8 @@ mutável em memória implícita:
 
 - `institutional_profile_versions` conserva o snapshot factual por campo;
 - `personas` identifica a Persona sem semear uma pessoa real;
-- `persona_versions` conserva identidade, biografia, estilo e instruções;
+- `persona_versions` conserva identidade, biografia, estilo, instruções e
+  regras críticas protegidas;
 - `context_publications` une uma versão factual e uma comportamental em uma
   publicação imutável;
 - `operation_settings.active_context_publication_id` é o único ponteiro ativo.
@@ -42,16 +43,24 @@ auditada sem apagar o evento por rollback.
 - `publish_learning` permite ao Gestor publicar mudanças comportamentais da
   mesma identidade;
 - somente o Dono confirma fatos institucionais, cria a primeira identidade,
-  muda identidade e habilita ou desliga produção;
-- produção exige reautenticação no servidor.
+  muda identidade e prepara o primeiro pacote;
+- validação combinada exige `publish_knowledge + train_pedro`;
+- publicação combinada exige `publish_knowledge + publish_learning`.
 
 Um Gestor não consegue carregar uma identidade diferente na publicação. Se
 alterar valor, fonte, validade ou divulgação de um campo antes confirmado, a
 confirmação do Dono é removida.
 
-## Portão de produção
+`publish_knowledge` não expõe Persona; `train_pedro` e `publish_learning` não
+expõem fatos institucionais. O histórico combinado só aparece para quem tem
+autoridade nos dois domínios.
 
-O portão consulta somente `active_context_publication_id`. Bloqueiam:
+## Prontidão do Contexto
+
+A leitura consulta somente `active_context_publication_id` e reexecuta a
+validação completa sobre os snapshots publicados. Assim, uma fonte ou validade
+que expire depois da publicação volta a aparecer como bloqueio. São
+obrigatórios:
 
 - nome comercial;
 - CRECI PJ e UF;
@@ -59,7 +68,16 @@ O portão consulta somente `active_context_publication_id`. Bloqueiam:
 - CRECI e UF quando a Persona se apresenta como Corretor.
 
 Campos opcionais ausentes geram alertas. A interface usa a declaração
-**Informado e confirmado pelo dono** e não alega validação externa.
+**Informado e confirmado pelo dono** e não alega validação externa. T03 não
+altera `operation_settings.production_enabled`, não publica RPC para isso e não
+oferece ação de produção na interface. Esse estado permanece somente leitura
+até o ticket responsável pelos demais gates.
+
+As regras críticas ficam em `protected_rules`, fora dos campos editáveis. Elas
+cobrem integridade factual, opt-out, privacidade, pergunta direta sobre IA,
+efeitos comerciais proibidos e riscos que exigem escalonamento silencioso. A
+validação e a publicação exigem a representação canônica e incluem essas regras
+no diff, snapshot e hash.
 
 ## Segurança e validação
 
@@ -71,13 +89,17 @@ Escritas diretas não são concedidas. As mutações ficam em funções
 O black-box da Preview Branch cobre:
 
 - baseline sem fatos inventados;
-- RLS positiva e negativa;
+- RLS positiva e negativa, inclusive Gestores com uma única permissão;
 - preparação por Gestor e identidade exclusiva do Dono;
 - validação, diff, hashes e conflito de versão;
+- regras críticas protegidas contra adulteração antes e depois da validação;
 - publicação e arquivamento;
 - imutabilidade em chamada autenticada e privilegiada;
 - auditoria de tentativa recusada;
-- portão e autoridade de produção;
+- ausência de mutator de produção e estado ainda desligado;
+- FKs compostas contra referências entre Operações e índices de suporte;
+- criação concorrente serializada com resultado estável;
+- revalidação da validade no snapshot publicado;
 - segunda publicação da mesma identidade por Gestor autorizado;
 - superfície funcional na PWA.
 
