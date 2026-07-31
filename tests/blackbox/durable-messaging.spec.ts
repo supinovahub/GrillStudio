@@ -463,7 +463,7 @@ test("predecessor lento não consome o orçamento nem manda sucessor para DLQ", 
         )
       returning id, aggregate_sequence, queue_message_id
     `;
-    expect(jobs.map((job) => job.aggregate_sequence)).toEqual([1, 2]);
+    expect(jobs.map((job) => Number(job.aggregate_sequence))).toEqual([1, 2]);
 
     await sql`select private.dispatch_due_scheduled_jobs(10)`;
     const published = await sql<
