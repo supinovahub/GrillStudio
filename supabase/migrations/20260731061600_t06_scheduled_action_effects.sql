@@ -27,6 +27,14 @@ alter table public.scheduled_jobs
   add column contention_count integer not null default 0
     check (contention_count >= 0);
 
+-- A scheduled job is a command envelope consumed by the dedicated scheduler
+-- worker. Publishing that envelope directly to inbound/outbound/reconciliation
+-- would violate those queues' contracts and could poison an unrelated worker.
+alter table public.scheduled_jobs
+  drop constraint scheduled_jobs_target_queue_check,
+  add constraint scheduled_jobs_target_queue_check
+    check (target_queue = 'scheduled_actions');
+
 update public.scheduled_jobs
 set effect_key = 'scheduled:' || encode(
   sha256(convert_to(dedupe_key, 'UTF8')),
@@ -628,7 +636,7 @@ begin
           and earlier.aggregate_type = job_record.aggregate_type
           and earlier.aggregate_id = job_record.aggregate_id
           and earlier.aggregate_sequence < job_record.aggregate_sequence
-          and earlier.status in ('leased', 'published')
+          and earlier.status in ('pending', 'leased', 'published')
       ) then
         update public.scheduled_jobs
         set

@@ -160,17 +160,18 @@ test("dez webhooks iguais produzem um efeito e raw divergente conflita", async (
 
 test("dois consumidores preservam a ordem canônica de cem mensagens", async () => {
   const chatId = `ordered-${suffix}`;
-  const accepted = await Promise.all(
-    Array.from({ length: 100 }, (_, index) =>
-      accept(
+  const accepted = [];
+  for (let index = 0; index < 100; index += 1) {
+    accepted.push(
+      await accept(
         event(
           `ordered-${String(index + 1).padStart(3, "0")}`,
           chatId,
           index + 1,
         ),
       ),
-    ),
-  );
+    );
+  }
   expect(accepted.every((result) => !result.error)).toBe(true);
 
   await Promise.all([drain(100), drain(100)]);
@@ -255,4 +256,302 @@ test("redelivery depois do efeito durável não duplica a mensagem", async () =>
       and provider_message_id = 'duplicate-001'
   `;
   expect(messages[0]!.count).toBe(1);
+});
+
+test("ação agendada conclui uma vez e redelivery reconcilia sem novo efeito", async () => {
+  await database.begin(async (sql) => {
+    const aggregateId = randomUUID();
+    const traceId = randomUUID();
+    const correlationId = randomUUID();
+    const jobs = await sql<
+      Array<{
+        aggregate_sequence: number;
+        effect_key: string;
+        id: string;
+      }>
+    >`
+      insert into public.scheduled_jobs (
+        organization_id,
+        operation_id,
+        job_type,
+        aggregate_type,
+        aggregate_id,
+        aggregate_version,
+        target_queue,
+        run_at,
+        dedupe_key,
+        payload,
+        trace_id,
+        correlation_id
+      )
+      values (
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        'synthetic.acceptance',
+        'synthetic_aggregate',
+        ${aggregateId}::uuid,
+        1,
+        'scheduled_actions',
+        now(),
+        ${`scheduled-once-${suffix}`},
+        ${sql.json({ fixture: "t06-no-content" })},
+        ${traceId}::uuid,
+        ${correlationId}::uuid
+      )
+      returning id, effect_key, aggregate_sequence
+    `;
+    const job = jobs[0]!;
+
+    await sql`select private.dispatch_due_scheduled_jobs(10)`;
+    await sql`
+      select private.consume_scheduled_actions(10, gen_random_uuid(), 30)
+    `;
+
+    const firstPass = await sql<
+      Array<{
+        effects: number;
+        executions: number;
+        status: string;
+      }>
+    >`
+      select
+        job.status,
+        (
+          select count(*)::integer
+          from private.scheduled_job_executions as execution
+          where execution.scheduled_job_id = job.id
+        ) as executions,
+        (
+          select count(*)::integer
+          from private.effect_ledger as effect
+          where effect.organization_id = job.organization_id
+            and effect.operation_id = job.operation_id
+            and effect.effect_key = job.effect_key
+            and effect.state = 'effect_recorded'
+        ) as effects
+      from public.scheduled_jobs as job
+      where job.id = ${job.id}::uuid
+    `;
+    expect(firstPass[0]).toEqual({
+      effects: 1,
+      executions: 1,
+      status: "completed",
+    });
+
+    await sql`
+      select pgmq.send(
+        'scheduled_actions',
+        jsonb_build_object(
+          'scheduled_job_id', job.id,
+          'organization_id', job.organization_id,
+          'operation_id', job.operation_id,
+          'aggregate_type', job.aggregate_type,
+          'aggregate_id', job.aggregate_id,
+          'aggregate_version', job.aggregate_version,
+          'aggregate_sequence', job.aggregate_sequence,
+          'effect_key', job.effect_key,
+          'trace_id', job.trace_id,
+          'correlation_id', job.correlation_id
+        )
+      )
+      from public.scheduled_jobs as job
+      where job.id = ${job.id}::uuid
+    `;
+    await sql`
+      select private.consume_scheduled_actions(10, gen_random_uuid(), 30)
+    `;
+
+    const redelivery = await sql<
+      Array<{ effects: number; executions: number; status: string }>
+    >`
+      select
+        job.status,
+        (
+          select count(*)::integer
+          from private.scheduled_job_executions as execution
+          where execution.scheduled_job_id = job.id
+        ) as executions,
+        (
+          select count(*)::integer
+          from private.effect_ledger as effect
+          where effect.organization_id = job.organization_id
+            and effect.operation_id = job.operation_id
+            and effect.effect_key = job.effect_key
+        ) as effects
+      from public.scheduled_jobs as job
+      where job.id = ${job.id}::uuid
+    `;
+    expect(redelivery[0]).toEqual({
+      effects: 1,
+      executions: 1,
+      status: "completed",
+    });
+  });
+});
+
+test("predecessor lento não consome o orçamento nem manda sucessor para DLQ", async () => {
+  await database.begin(async (sql) => {
+    const aggregateId = randomUUID();
+    const traceId = randomUUID();
+    const correlationId = randomUUID();
+    const jobs = await sql<
+      Array<{
+        aggregate_sequence: number;
+        id: string;
+        queue_message_id: number | null;
+      }>
+    >`
+      insert into public.scheduled_jobs (
+        organization_id,
+        operation_id,
+        job_type,
+        aggregate_type,
+        aggregate_id,
+        aggregate_version,
+        target_queue,
+        run_at,
+        max_attempts,
+        dedupe_key,
+        payload,
+        trace_id,
+        correlation_id
+      )
+      values
+        (
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          'synthetic.slow-predecessor',
+          'synthetic_aggregate',
+          ${aggregateId}::uuid,
+          1,
+          'scheduled_actions',
+          now(),
+          2,
+          ${`scheduled-slow-1-${suffix}`},
+          ${sql.json({ fixture: "t06-no-content" })},
+          ${traceId}::uuid,
+          ${correlationId}::uuid
+        ),
+        (
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          'synthetic.slow-successor',
+          'synthetic_aggregate',
+          ${aggregateId}::uuid,
+          2,
+          'scheduled_actions',
+          now(),
+          2,
+          ${`scheduled-slow-2-${suffix}`},
+          ${sql.json({ fixture: "t06-no-content" })},
+          ${traceId}::uuid,
+          ${correlationId}::uuid
+        )
+      returning id, aggregate_sequence, queue_message_id
+    `;
+    expect(jobs.map((job) => job.aggregate_sequence)).toEqual([1, 2]);
+
+    await sql`select private.dispatch_due_scheduled_jobs(10)`;
+    const published = await sql<
+      Array<{
+        aggregate_sequence: number;
+        id: string;
+        queue_message_id: number;
+      }>
+    >`
+      select id, aggregate_sequence, queue_message_id
+      from public.scheduled_jobs
+      where aggregate_id = ${aggregateId}::uuid
+      order by aggregate_sequence
+    `;
+    const predecessor = published[0]!;
+    const successor = published[1]!;
+
+    await sql`
+      select *
+      from pgmq.set_vt(
+        'scheduled_actions',
+        ${predecessor.queue_message_id},
+        120
+      )
+    `;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await sql`
+        select *
+        from pgmq.set_vt(
+          'scheduled_actions',
+          ${successor.queue_message_id},
+          0
+        )
+      `;
+      await sql`
+        select private.consume_scheduled_actions(1, gen_random_uuid(), 5)
+      `;
+    }
+
+    const contended = await sql<
+      Array<{
+        attempts: number;
+        contention_count: number;
+        dead_letters: number;
+        status: string;
+      }>
+    >`
+      select
+        job.status,
+        job.attempts,
+        job.contention_count,
+        (
+          select count(*)::integer
+          from private.dead_letters as letter
+          where letter.envelope_id = job.id
+        ) as dead_letters
+      from public.scheduled_jobs as job
+      where job.id = ${successor.id}::uuid
+    `;
+    expect(contended[0]).toEqual({
+      attempts: 0,
+      contention_count: 10,
+      dead_letters: 0,
+      status: "published",
+    });
+
+    await sql`
+      select *
+      from pgmq.set_vt(
+        'scheduled_actions',
+        ${predecessor.queue_message_id},
+        0
+      )
+    `;
+    await sql`
+      select *
+      from pgmq.set_vt(
+        'scheduled_actions',
+        ${successor.queue_message_id},
+        0
+      )
+    `;
+    await sql`
+      select private.consume_scheduled_actions(10, gen_random_uuid(), 30)
+    `;
+
+    const completed = await sql<
+      Array<{ executions: number; statuses: string[] }>
+    >`
+      select
+        array_agg(job.status order by job.aggregate_sequence) as statuses,
+        (
+          select count(*)::integer
+          from private.scheduled_job_executions as execution
+          where execution.aggregate_id = ${aggregateId}::uuid
+        ) as executions
+      from public.scheduled_jobs as job
+      where job.aggregate_id = ${aggregateId}::uuid
+    `;
+    expect(completed[0]).toEqual({
+      executions: 2,
+      statuses: ["completed", "completed"],
+    });
+  });
 });
