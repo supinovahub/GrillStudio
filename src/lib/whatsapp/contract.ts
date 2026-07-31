@@ -42,4 +42,3 @@ export interface WhatsappInboundAdapter<TRaw> {
   readonly provider: WhatsappProvider;
   normalize(raw: TRaw): NormalizedInboundEvent;
 }
-

@@ -30,4 +30,3 @@ export async function getConversationDetail(
   }
   return data as unknown as ConversationDetail;
 }
-
