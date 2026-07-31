@@ -64,9 +64,23 @@ async function createReplayFenceFixture(label: string) {
   const firstMessageId = `replay-fence-${label}-n-${suffix}`;
   const secondMessageId = `replay-fence-${label}-n1-${suffix}`;
   const first = await accept(event(firstMessageId, chatId, 1));
-  const second = await accept(event(secondMessageId, chatId, 2));
   expect(first.error).toBeNull();
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      ${(first.data as { queue_message_id: number }).queue_message_id},
+      60
+    )
+  `;
+  const second = await accept(event(secondMessageId, chatId, 2));
   expect(second.error).toBeNull();
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      ${(second.data as { queue_message_id: number }).queue_message_id},
+      60
+    )
+  `;
 
   return database.begin(async (sql) => {
     const inboxes = await sql<
@@ -452,6 +466,16 @@ test("redelivery físico concorrente adia sem deadlock nem consumir tentativas",
     event(messageId, `physical-redelivery-chat-${suffix}`),
   );
   expect(accepted.error).toBeNull();
+  const acceptedQueueMessageId = (
+    accepted.data as { queue_message_id: number }
+  ).queue_message_id;
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      ${acceptedQueueMessageId},
+      60
+    )
+  `;
 
   const inboxes = await database<
     Array<{
@@ -487,7 +511,8 @@ test("redelivery físico concorrente adia sem deadlock nem consumir tentativas",
   await database`
     select pgmq.send(
       'inbound_whatsapp',
-      ${database.json(envelope)}::jsonb
+      ${database.json(envelope)}::jsonb,
+      60
     )
   `;
 
@@ -499,6 +524,15 @@ test("redelivery físico concorrente adia sem deadlock nem consumir tentativas",
         and stream.operation_id = ${operationId}::uuid
         and stream.stream_key = ${inbox.stream_key}
       for update
+    `;
+    await database`
+      select pgmq.set_vt(
+        'inbound_whatsapp',
+        queued.msg_id,
+        0
+      )
+      from pgmq.q_inbound_whatsapp as queued
+      where queued.message ->> 'inbox_id' = ${inbox.id}
     `;
 
     const deferred = await Promise.all(
@@ -610,6 +644,15 @@ test("replay N vence, adia N+1 e preserva ordem N,N+1", async () => {
   });
   await reached;
 
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      queued.msg_id,
+      0
+    )
+    from pgmq.q_inbound_whatsapp as queued
+    where queued.message ->> 'inbox_id' = ${fixture.secondInboxId}
+  `;
   const worker = await database.begin(async (sql) => {
     await sql`set local statement_timeout = '5s'`;
     await sql`
@@ -691,6 +734,15 @@ test("replay N vence, adia N+1 e preserva ordem N,N+1", async () => {
 
 test("worker N+1 vence e replay N espera antes de rejeitar stale", async () => {
   const fixture = await createReplayFenceFixture("worker-wins");
+  await database`
+    select pgmq.set_vt(
+      'inbound_whatsapp',
+      queued.msg_id,
+      0
+    )
+    from pgmq.q_inbound_whatsapp as queued
+    where queued.message ->> 'inbox_id' = ${fixture.secondInboxId}
+  `;
   let releaseWorker!: () => void;
   let workerReached!: () => void;
   const release = new Promise<void>((resolve) => {
@@ -1589,6 +1641,15 @@ test("reconciliation forjada não altera outbound vivo e o efeito ainda executa"
 });
 
 test("replay preserva DLQ quando efeito pode estar em voo", async () => {
+  const fixtureInbound = await accept(
+    event(
+      `uncertain-effect-seed-${suffix}`,
+      `uncertain-effect-chat-${suffix}`,
+    ),
+  );
+  expect(fixtureInbound.error).toBeNull();
+  await drain();
+
   await database.begin(async (sql) => {
     await sql`select pgmq.purge_queue('outbound_whatsapp')`;
     const conversations = await sql<
@@ -1670,57 +1731,51 @@ test("replay preserva DLQ quando efeito pode estar em voo", async () => {
             'connection_id',
             ${connectionId}::uuid
           ) as value
-        ),
-        inserted as (
-          insert into private.outbox_events (
-            organization_id,
-            operation_id,
-            event_type,
-            aggregate_type,
-            aggregate_id,
-            aggregate_version,
-            aggregate_sequence,
-            actor_type,
-            actor_reference,
-            target_queue,
-            idempotency_key,
-            payload_hash,
-            payload,
-            trace_id,
-            correlation_id
-          )
-          select
-            ${organizationId}::uuid,
-            ${operationId}::uuid,
-            'message.send_requested.v1',
-            'conversation',
-            ${conversation.id}::uuid,
-            ${conversation.version},
-            next_sequence.value,
-            'user',
-            ${ownerMembershipId},
-            'outbound_whatsapp',
-            ${`uncertain:${effectState}:${commandId}`},
-            encode(
-              sha256(convert_to(payload.value::text, 'UTF8')),
-              'hex'
-            ),
-            payload.value,
-            gen_random_uuid(),
-            gen_random_uuid()
-          from next_sequence, payload
-          returning id
+        )
+        insert into private.outbox_events (
+          organization_id,
+          operation_id,
+          event_type,
+          aggregate_type,
+          aggregate_id,
+          aggregate_version,
+          aggregate_sequence,
+          actor_type,
+          actor_reference,
+          target_queue,
+          idempotency_key,
+          payload_hash,
+          payload,
+          trace_id,
+          correlation_id
         )
         select
-          event.id,
-          event.idempotency_key,
-          event.payload_hash,
-          event.queue_message_id,
-          event.trace_id,
-          event.correlation_id
-        from inserted
-        join private.outbox_events as event
-          on event.id = inserted.id
+          ${organizationId}::uuid,
+          ${operationId}::uuid,
+          'message.send_requested.v1',
+          'conversation',
+          ${conversation.id}::uuid,
+          ${conversation.version},
+          next_sequence.value,
+          'user',
+          ${ownerMembershipId},
+          'outbound_whatsapp',
+          ${`uncertain:${effectState}:${commandId}`},
+          encode(
+            sha256(convert_to(payload.value::text, 'UTF8')),
+            'hex'
+          ),
+          payload.value,
+          gen_random_uuid(),
+          gen_random_uuid()
+        from next_sequence, payload
+        returning
+          id,
+          idempotency_key,
+          payload_hash,
+          queue_message_id,
+          trace_id,
+          correlation_id
       `;
       const event = events[0]!;
       await sql`select private.dispatch_outbox_events(100)`;
