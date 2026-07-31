@@ -90,8 +90,10 @@ async function ingest(
   alias = "lead-primary",
   phone?: string,
 ) {
+  const normalizedEvent = inbound(messageId, chatId, alias, phone);
   const accepted = await admin.rpc("ingest_simulated_inbound", {
-    normalized_event: inbound(messageId, chatId, alias, phone),
+    normalized_event: normalizedEvent,
+    raw_body: JSON.stringify(normalizedEvent),
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
     target_connection_id: connectionId,

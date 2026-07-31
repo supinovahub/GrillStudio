@@ -2388,6 +2388,7 @@ export type Database = {
       ingest_simulated_inbound: {
         Args: {
           normalized_event: Json
+          raw_body: string
           request_correlation_id: string
           request_trace_id: string
           target_connection_id: string
