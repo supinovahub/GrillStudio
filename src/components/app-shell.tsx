@@ -19,7 +19,7 @@ const managementNavigation = [
   ["Empreendimentos", "/app/empreendimentos"],
   ["Pedro", "/app/pedro"],
   ["Relatórios", "/app/relatorios"],
-  ["Configurações", "/app/configuracoes"],
+  ["Configurações", "/app/configuracoes/equipe"],
 ] as const;
 
 const brokerNavigation = [
@@ -30,8 +30,12 @@ const brokerNavigation = [
   ["Perfil", "/app/perfil"],
 ] as const;
 
-function roleLabel(role: MemberWorkspace["member_role"]) {
+function roleLabel(role: string) {
   return role === "owner" ? "Dono" : role === "manager" ? "Gestor" : "Corretor";
+}
+
+function roleSummary(workspace: MemberWorkspace) {
+  return workspace.member_roles.map(roleLabel).join(" · ");
 }
 
 export function AppShell({
@@ -45,10 +49,21 @@ export function AppShell({
   environment: PreviewEnvironment;
   workspace: MemberWorkspace;
 }>) {
-  const navigation =
-    workspace.member_role === "broker"
-      ? brokerNavigation
-      : managementNavigation;
+  const hasManagementRole = workspace.member_roles.some((role) =>
+    ["owner", "manager"].includes(role),
+  );
+  const availableManagementNavigation = workspace.can_manage_members
+    ? managementNavigation
+    : managementNavigation.filter(([label]) => label !== "Configurações");
+  const navigation = hasManagementRole
+    ? workspace.member_roles.includes("broker")
+      ? [
+          ...availableManagementNavigation.slice(0, 4),
+          ["Meu pipeline", "/app/meu-pipeline"] as const,
+          ...availableManagementNavigation.slice(4),
+        ]
+      : availableManagementNavigation
+    : brokerNavigation;
   const pedroState = workspace.global_pause
     ? "Pausa global"
     : workspace.production_enabled
@@ -113,7 +128,7 @@ export function AppShell({
                   {roleLabel(workspace.member_role).slice(0, 1)}
                 </span>
                 <span>
-                  <strong>{roleLabel(workspace.member_role)}</strong>
+                  <strong>{roleSummary(workspace)}</strong>
                   <small>Perfil e sessões</small>
                 </span>
               </summary>
@@ -145,7 +160,11 @@ export function AppShell({
             {label}
           </Link>
         ))}
-        <Link href={workspace.member_role === "broker" ? "/app/perfil" : "/app/configuracoes"}>
+        <Link
+          href={
+            hasManagementRole ? "/app/configuracoes/equipe" : "/app/perfil"
+          }
+        >
           Mais
         </Link>
       </nav>

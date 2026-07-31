@@ -265,6 +265,17 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      approve_membership: {
+        Args: {
+          approved_permissions: string[]
+          approved_roles: string[]
+          request_correlation_id: string
+          request_trace_id: string
+          target_membership_id: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
       activate_global_pause: {
         Args: {
           request_correlation_id: string
@@ -276,11 +287,102 @@ export type Database = {
           production_enabled: boolean
         }[]
       }
+      complete_invitation_registration: {
+        Args: {
+          registration_email: string
+          registration_full_name: string
+          registration_token: string
+          registration_user_id: string
+          registration_whatsapp: string
+          request_correlation_id: string
+          request_trace_id: string
+        }
+        Returns: string
+      }
+      create_general_invitation_link: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: {
+          id: string
+          status: string
+          token: string
+        }[]
+      }
+      create_individual_invitation: {
+        Args: {
+          invite_email: string
+          invite_operation_id: string
+          invite_roles: string[]
+          request_correlation_id: string
+          request_trace_id: string
+        }
+        Returns: {
+          email: string
+          id: string
+          predefined_roles: string[]
+          status: string
+          token: string
+        }[]
+      }
+      deactivate_membership_after_reauthentication: {
+        Args: {
+          actor_user_id: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_membership_id: string
+          target_operation_id: string
+        }
+        Returns: {
+          calls_within_one_hour: number
+          future_calls: number
+          post_call_opportunities: number
+          revoked_sessions: number
+        }[]
+      }
+      get_invitation_entry: {
+        Args: {
+          invitation_token: string
+        }
+        Returns: {
+          invitation_kind: string
+          link_status: string
+          organization_name: string
+        }[]
+      }
+      get_member_deactivation_impact: {
+        Args: {
+          target_membership_id: string
+          target_operation_id: string
+        }
+        Returns: {
+          calls_within_one_hour: number
+          future_calls: number
+          post_call_opportunities: number
+        }[]
+      }
       get_member_workspace: {
         Args: never
         Returns: {
           global_pause: boolean
           member_role: string
+          operation_id: string
+          operation_name: string
+          organization_id: string
+          organization_name: string
+          production_enabled: boolean
+        }[]
+      }
+      get_member_workspace_v2: {
+        Args: never
+        Returns: {
+          can_manage_members: boolean
+          global_pause: boolean
+          member_permissions: string[]
+          member_role: string
+          member_roles: string[]
           operation_id: string
           operation_name: string
           organization_id: string
@@ -299,6 +401,50 @@ export type Database = {
           organization_id: string
           organization_name: string
           production_enabled: boolean
+        }[]
+      }
+      get_team_management: {
+        Args: {
+          target_operation_id: string
+        }
+        Returns: Json
+      }
+      regenerate_general_invitation_link: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_link_id: string
+        }
+        Returns: {
+          id: string
+          status: string
+          token: string
+        }[]
+      }
+      reserve_invitation_registration: {
+        Args: {
+          registration_email: string
+          registration_token: string
+          request_fingerprint: string
+        }
+        Returns: {
+          invitation_kind: string
+          operation_id: string
+          organization_id: string
+          predefined_roles: string[]
+        }[]
+      }
+      set_general_invitation_link_status: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_link_id: string
+          target_status: string
+        }
+        Returns: {
+          id: string
+          status: string
+          token: string
         }[]
       }
     }
@@ -436,7 +582,7 @@ export const Constants = {
 
 // Application aliases derived from the generated RPC contracts above.
 export type MemberWorkspace =
-  Database["public"]["Functions"]["get_member_workspace"]["Returns"][number]
+  Database["public"]["Functions"]["get_member_workspace_v2"]["Returns"][number]
 
 export type OperationShell =
   Database["public"]["Functions"]["get_operation_shell"]["Returns"][number]

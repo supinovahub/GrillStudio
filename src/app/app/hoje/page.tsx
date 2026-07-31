@@ -19,7 +19,7 @@ export default async function TodayPage() {
     redirect("/aguardando-aprovacao");
   }
 
-  if (workspace.member_role !== "broker") {
+  if (!workspace.member_roles.includes("broker")) {
     redirect("/app/central");
   }
 
