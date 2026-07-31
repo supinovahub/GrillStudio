@@ -90,12 +90,69 @@ async function ingest(
   alias = "lead-primary",
   phone?: string,
 ) {
-  return admin.rpc("ingest_simulated_inbound", {
+  const accepted = await admin.rpc("ingest_simulated_inbound", {
     normalized_event: inbound(messageId, chatId, alias, phone),
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
     target_connection_id: connectionId,
   });
+  if (accepted.error || (accepted.data as { status?: string })?.status === "duplicate") {
+    return accepted;
+  }
+
+  const worker = await admin.rpc("run_durable_workers", {
+    maximum_messages: 25,
+  });
+  if (worker.error) return worker;
+
+  const messages = await database<
+    Array<{
+      contact_id: string;
+      conversation_id: string;
+      message_id: string;
+      opportunity_id: string;
+      ownership_type: string;
+      requires_human_review: boolean;
+      version: number;
+    }>
+  >`
+    select
+      conversation.contact_id,
+      conversation.id as conversation_id,
+      message.id as message_id,
+      conversation.opportunity_id,
+      conversation.ownership_type,
+      conversation.requires_human_review,
+      conversation.version
+    from public.messages as message
+    join public.conversations as conversation
+      on conversation.id = message.conversation_id
+    where message.connection_id = ${connectionId}::uuid
+      and message.provider_message_id = ${messageId}
+  `;
+  if (messages[0]) {
+    return {
+      data: {
+        ...messages[0],
+        status: "received",
+      },
+      error: null,
+    };
+  }
+
+  const reviews = await database<Array<{ reason: string }>>`
+    select reason
+    from private.simulator_inbound_reviews
+    where connection_id = ${connectionId}::uuid
+      and provider_message_id = ${messageId}
+  `;
+  return {
+    data: {
+      reason: reviews[0]?.reason,
+      status: "requires_review",
+    },
+    error: null,
+  };
 }
 
 async function version(targetConversationId: string): Promise<number> {
@@ -1075,8 +1132,13 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
   });
   expect(first.error).toBeNull();
   expect(first.data).toEqual(
-    expect.objectContaining({ pending_cancelled: true, status: "captured" }),
+    expect.objectContaining({ pending_cancelled: true, status: "queued" }),
   );
+
+  const outboundWorker = await admin.rpc("run_durable_workers", {
+    maximum_messages: 25,
+  });
+  expect(outboundWorker.error).toBeNull();
 
   const duplicate = await owner.rpc("send_human_message", {
     command_id: commandId,

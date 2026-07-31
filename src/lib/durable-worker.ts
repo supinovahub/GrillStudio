@@ -1,5 +1,3 @@
-import "server-only";
-
 import type { RequestContext } from "@/lib/observability";
 
 export async function wakeDurableWorker(

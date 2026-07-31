@@ -1,4 +1,7 @@
-// @ts-nocheck -- Supabase Edge Functions are type-checked by the Deno runtime.
+declare const Deno: {
+  env: { get(name: string): string | undefined };
+  serve(handler: (request: Request) => Promise<Response>): void;
+};
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
