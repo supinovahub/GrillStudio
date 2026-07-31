@@ -602,14 +602,31 @@ export type Database = {
       conversations: {
         Row: {
           assigned_membership_id: string | null
+          automation_mode: string
           closed_at: string | null
+          connection_id: string | null
           contact_id: string
           id: string
+          is_paused: boolean
+          last_inbound_at: string | null
+          last_outbound_at: string | null
           opened_at: string
           operation_id: string
           opportunity_id: string
           organization_id: string
           ownership_type: string
+          pause_reason: string | null
+          paused_at: string | null
+          paused_by_membership_id: string | null
+          pending_return: boolean
+          pending_return_action: string | null
+          pending_return_requested_at: string | null
+          pending_return_requested_by_membership_id: string | null
+          pending_return_requested_version: number | null
+          pending_return_target_mode: string | null
+          provider_chat_id: string | null
+          requires_human_review: boolean
+          review_reason: string | null
           sleeping_since: string | null
           status: string
           updated_at: string
@@ -617,14 +634,31 @@ export type Database = {
         }
         Insert: {
           assigned_membership_id?: string | null
+          automation_mode?: string
           closed_at?: string | null
+          connection_id?: string | null
           contact_id: string
           id?: string
+          is_paused?: boolean
+          last_inbound_at?: string | null
+          last_outbound_at?: string | null
           opened_at?: string
           operation_id: string
           opportunity_id: string
           organization_id: string
           ownership_type?: string
+          pause_reason?: string | null
+          paused_at?: string | null
+          paused_by_membership_id?: string | null
+          pending_return?: boolean
+          pending_return_action?: string | null
+          pending_return_requested_at?: string | null
+          pending_return_requested_by_membership_id?: string | null
+          pending_return_requested_version?: number | null
+          pending_return_target_mode?: string | null
+          provider_chat_id?: string | null
+          requires_human_review?: boolean
+          review_reason?: string | null
           sleeping_since?: string | null
           status?: string
           updated_at?: string
@@ -632,14 +666,31 @@ export type Database = {
         }
         Update: {
           assigned_membership_id?: string | null
+          automation_mode?: string
           closed_at?: string | null
+          connection_id?: string | null
           contact_id?: string
           id?: string
+          is_paused?: boolean
+          last_inbound_at?: string | null
+          last_outbound_at?: string | null
           opened_at?: string
           operation_id?: string
           opportunity_id?: string
           organization_id?: string
           ownership_type?: string
+          pause_reason?: string | null
+          paused_at?: string | null
+          paused_by_membership_id?: string | null
+          pending_return?: boolean
+          pending_return_action?: string | null
+          pending_return_requested_at?: string | null
+          pending_return_requested_by_membership_id?: string | null
+          pending_return_requested_version?: number | null
+          pending_return_target_mode?: string | null
+          provider_chat_id?: string | null
+          requires_human_review?: boolean
+          review_reason?: string | null
           sleeping_since?: string | null
           status?: string
           updated_at?: string
@@ -652,6 +703,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "opportunities"
             referencedColumns: ["organization_id", "contact_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_operation_connection_fkey"
+            columns: ["organization_id", "operation_id", "connection_id"]
+            isOneToOne: false
+            referencedRelation: "whatsapp_connections"
+            referencedColumns: ["organization_id", "operation_id", "id"]
           },
           {
             foreignKeyName: "conversations_operation_opportunity_fkey"
@@ -686,6 +744,23 @@ export type Database = {
             columns: ["organization_id", "opportunity_id"]
             isOneToOne: false
             referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_paused_by_membership_fkey"
+            columns: ["organization_id", "paused_by_membership_id"]
+            isOneToOne: false
+            referencedRelation: "memberships"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_pending_return_by_membership_fkey"
+            columns: [
+              "organization_id",
+              "pending_return_requested_by_membership_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "memberships"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -1053,6 +1128,92 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "organizations"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      messages: {
+        Row: {
+          body: string | null
+          connection_id: string
+          conversation_id: string
+          created_at: string
+          created_by_membership_id: string | null
+          created_by_type: string
+          direction: string
+          id: string
+          idempotency_key: string | null
+          kind: string
+          operation_id: string
+          organization_id: string
+          provider_message_id: string | null
+          provider_occurred_at: string | null
+          status: string
+        }
+        Insert: {
+          body?: string | null
+          connection_id: string
+          conversation_id: string
+          created_at?: string
+          created_by_membership_id?: string | null
+          created_by_type: string
+          direction: string
+          id?: string
+          idempotency_key?: string | null
+          kind?: string
+          operation_id: string
+          organization_id: string
+          provider_message_id?: string | null
+          provider_occurred_at?: string | null
+          status: string
+        }
+        Update: {
+          body?: string | null
+          connection_id?: string
+          conversation_id?: string
+          created_at?: string
+          created_by_membership_id?: string | null
+          created_by_type?: string
+          direction?: string
+          id?: string
+          idempotency_key?: string | null
+          kind?: string
+          operation_id?: string
+          organization_id?: string
+          provider_message_id?: string | null
+          provider_occurred_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_organization_id_created_by_membership_id_fkey"
+            columns: ["organization_id", "created_by_membership_id"]
+            isOneToOne: false
+            referencedRelation: "memberships"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "messages_organization_id_operation_id_connection_id_fkey"
+            columns: ["organization_id", "operation_id", "connection_id"]
+            isOneToOne: false
+            referencedRelation: "whatsapp_connections"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "messages_organization_id_operation_id_conversation_id_conn_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "conversation_id",
+              "connection_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: [
+              "organization_id",
+              "operation_id",
+              "id",
+              "connection_id",
+            ]
           },
         ]
       }
@@ -1670,6 +1831,120 @@ export type Database = {
           },
         ]
       }
+      provider_identities: {
+        Row: {
+          connection_id: string
+          contact_id: string
+          created_at: string
+          display_name: string | null
+          first_seen_at: string
+          id: string
+          last_seen_at: string
+          operation_id: string
+          organization_id: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          connection_id: string
+          contact_id: string
+          created_at?: string
+          display_name?: string | null
+          first_seen_at: string
+          id?: string
+          last_seen_at: string
+          operation_id: string
+          organization_id: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          connection_id?: string
+          contact_id?: string
+          created_at?: string
+          display_name?: string | null
+          first_seen_at?: string
+          id?: string
+          last_seen_at?: string
+          operation_id?: string
+          organization_id?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "provider_identities_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "provider_identities_organization_id_operation_id_connectio_fkey"
+            columns: ["organization_id", "operation_id", "connection_id"]
+            isOneToOne: false
+            referencedRelation: "whatsapp_connections"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+        ]
+      }
+      provider_identity_aliases: {
+        Row: {
+          alias_type: string
+          alias_value: string
+          connection_id: string
+          created_at: string
+          id: string
+          operation_id: string
+          organization_id: string
+          provider_identity_id: string
+          valid_from: string
+          valid_until: string | null
+        }
+        Insert: {
+          alias_type: string
+          alias_value: string
+          connection_id: string
+          created_at?: string
+          id?: string
+          operation_id: string
+          organization_id: string
+          provider_identity_id: string
+          valid_from: string
+          valid_until?: string | null
+        }
+        Update: {
+          alias_type?: string
+          alias_value?: string
+          connection_id?: string
+          created_at?: string
+          id?: string
+          operation_id?: string
+          organization_id?: string
+          provider_identity_id?: string
+          valid_from?: string
+          valid_until?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "provider_identity_aliases_organization_id_operation_id_con_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "connection_id",
+              "provider_identity_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "provider_identities"
+            referencedColumns: [
+              "organization_id",
+              "operation_id",
+              "connection_id",
+              "id",
+            ]
+          },
+        ]
+      }
       source_attributions: {
         Row: {
           attributed_at: string
@@ -1839,6 +2114,65 @@ export type Database = {
           },
         ]
       }
+      whatsapp_connections: {
+        Row: {
+          adapter_type: string
+          capabilities: Json
+          created_at: string
+          display_address: string | null
+          display_name: string
+          id: string
+          inbound_enabled: boolean
+          is_test: boolean
+          operation_id: string
+          organization_id: string
+          provider_connection_id: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          adapter_type: string
+          capabilities?: Json
+          created_at?: string
+          display_address?: string | null
+          display_name: string
+          id?: string
+          inbound_enabled?: boolean
+          is_test?: boolean
+          operation_id: string
+          organization_id: string
+          provider_connection_id: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          adapter_type?: string
+          capabilities?: Json
+          created_at?: string
+          display_address?: string | null
+          display_name?: string
+          id?: string
+          inbound_enabled?: boolean
+          is_test?: boolean
+          operation_id?: string
+          organization_id?: string
+          provider_connection_id?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "whatsapp_connections_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -1873,6 +2207,15 @@ export type Database = {
           request_correlation_id: string
           request_trace_id: string
           target_operation_id: string
+        }
+        Returns: Json
+      }
+      assume_conversation: {
+        Args: {
+          expected_version: number
+          request_correlation_id: string
+          request_trace_id: string
+          target_conversation_id: string
         }
         Returns: Json
       }
@@ -1965,6 +2308,11 @@ export type Database = {
         Args: { target_operation_id: string }
         Returns: Json
       }
+      get_conversation_detail: {
+        Args: { target_conversation_id: string }
+        Returns: Json
+      }
+      get_inbox_list: { Args: { target_operation_id: string }; Returns: Json }
       get_invitation_entry: {
         Args: { invitation_token: string }
         Returns: {
@@ -2037,6 +2385,15 @@ export type Database = {
         Args: { target_operation_id: string }
         Returns: Json
       }
+      ingest_simulated_inbound: {
+        Args: {
+          normalized_event: Json
+          request_correlation_id: string
+          request_trace_id: string
+          target_connection_id: string
+        }
+        Returns: Json
+      }
       initialize_context_drafts: {
         Args: {
           request_correlation_id: string
@@ -2054,6 +2411,16 @@ export type Database = {
           request_correlation_id: string
           request_trace_id: string
           target_operation_id: string
+        }
+        Returns: Json
+      }
+      pause_conversation: {
+        Args: {
+          expected_version: number
+          pause_reason: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_conversation_id: string
         }
         Returns: Json
       }
@@ -2102,6 +2469,17 @@ export type Database = {
           predefined_roles: string[]
         }[]
       }
+      return_conversation_to_pedro: {
+        Args: {
+          expected_version: number
+          request_correlation_id: string
+          request_trace_id: string
+          return_action: string
+          target_automation_mode: string
+          target_conversation_id: string
+        }
+        Returns: Json
+      }
       reverse_contact_merge: {
         Args: {
           expected_duplicate_version: number
@@ -2134,6 +2512,17 @@ export type Database = {
           request_trace_id: string
           target_operation_id: string
           target_version_id: string
+        }
+        Returns: Json
+      }
+      send_human_message: {
+        Args: {
+          command_id: string
+          expected_version: number
+          message_text: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_conversation_id: string
         }
         Returns: Json
       }
