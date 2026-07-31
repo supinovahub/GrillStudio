@@ -654,6 +654,43 @@ test("keeps generic transitions pre-Call and fails closed for T21/T24 stages", a
   );
   expect(negotiation.error?.code).toBe("42501");
 
+  for (const [index, callStatus] of ["completed", "no_show"].entries()) {
+    const postCallLead = await createManualLead({
+      name: `Perda pós-Call ${callStatus}`,
+      phone: `(11) 9100${index}-4040`,
+    });
+    const started = await transition(
+      postCallLead.opportunity_id,
+      "in_service",
+      1,
+    );
+    expect(started.error).toBeNull();
+    await insertFixture("calls", {
+      id: randomUUID(),
+      operation_id: operationId,
+      opportunity_id: postCallLead.opportunity_id,
+      organization_id: organizationId,
+      scheduled_for: new Date(Date.now() - 3_600_000).toISOString(),
+      status: callStatus,
+    });
+
+    const genericLoss = await transition(
+      postCallLead.opportunity_id,
+      "lost",
+      2,
+      "Decisão depois da Call",
+      true,
+    );
+    expect(genericLoss.error?.code).toBe("23514");
+    expect(genericLoss.error?.message).toContain("T24");
+    const unchanged = await admin
+      .from("opportunities")
+      .select("stage")
+      .eq("id", postCallLead.opportunity_id)
+      .single();
+    expect(unchanged.data?.stage).toBe("in_service");
+  }
+
   const current = await admin
     .from("opportunities")
     .select("stage")
@@ -1254,6 +1291,223 @@ test("manual merge is versioned, reversible and preserves identity, opt-out, ori
     target_contact_merge_id: mergeResult.contact_merge_id,
   });
   expect(secondReversal.error?.code).toBe("23514");
+
+  const secondMerge = await owner.rpc("merge_contacts", {
+    duplicate_contact_id: duplicate.contact_id,
+    expected_duplicate_version: await contactVersion(duplicate.contact_id),
+    expected_primary_version: await contactVersion(primary.contact_id),
+    primary_contact_id: primary.contact_id,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+  });
+  expect(secondMerge.error).toBeNull();
+  const secondMergeResult = secondMerge.data as {
+    contact_merge_id: string;
+  };
+  expect(secondMergeResult.contact_merge_id).not.toBe(
+    mergeResult.contact_merge_id,
+  );
+
+  const mergeCycles = await database<
+    { active_merge_id: string; merge_count: number; reversal_count: number }[]
+  >`
+    select
+      active_merge.contact_merge_id as active_merge_id,
+      (
+        select count(*)::int
+        from public.contact_merges as merge_log
+        where merge_log.merged_contact_id = ${duplicate.contact_id}
+      ) as merge_count,
+      (
+        select count(*)::int
+        from public.contact_merge_reversals as reversal
+        join public.contact_merges as merge_log
+          on merge_log.id = reversal.contact_merge_id
+        where merge_log.merged_contact_id = ${duplicate.contact_id}
+      ) as reversal_count
+    from private.active_contact_merges as active_merge
+    where active_merge.merged_contact_id = ${duplicate.contact_id}
+  `;
+  expect(mergeCycles).toEqual([
+    {
+      active_merge_id: secondMergeResult.contact_merge_id,
+      merge_count: 2,
+      reversal_count: 1,
+    },
+  ]);
+});
+
+test("reversal aborts atomically when any snapshotted aggregate changed after merge", async () => {
+  const aggregateKinds = [
+    "phone",
+    "phone_observation",
+    "participant",
+    "source",
+    "opportunity",
+    "conversation",
+    "opt_out",
+  ] as const;
+
+  for (const [index, aggregateKind] of aggregateKinds.entries()) {
+    const serial = String(1200 + index);
+    const primary = await createManualLead({
+      name: `Snapshot principal ${aggregateKind}`,
+      phone: `(11) 93000-${serial}`,
+      source: "snapshot-primary",
+    });
+    const duplicate = await createManualLead({
+      name: `Snapshot duplicado ${aggregateKind}`,
+      phone: `(11) 94000-${serial}`,
+      source: "snapshot-duplicate",
+    });
+    const participantId = randomUUID();
+    const conversationId = randomUUID();
+    const optOutId = randomUUID();
+    await insertFixture("opportunity_participants", {
+      contact_id: duplicate.contact_id,
+      display_name: `Participante ${aggregateKind}`,
+      id: participantId,
+      opportunity_id: duplicate.opportunity_id,
+      organization_id: organizationId,
+    });
+    await insertFixture("conversations", {
+      closed_at: new Date().toISOString(),
+      contact_id: duplicate.contact_id,
+      id: conversationId,
+      operation_id: operationId,
+      opportunity_id: duplicate.opportunity_id,
+      organization_id: organizationId,
+      status: "closed",
+    });
+    await insertFixture("opt_outs", {
+      contact_id: duplicate.contact_id,
+      id: optOutId,
+      organization_id: organizationId,
+      phone_e164: duplicate.phone_e164,
+      reason: `Opt-out original ${aggregateKind}`,
+    });
+
+    const duplicatePhone = await admin
+      .from("contact_phones")
+      .select("id")
+      .eq("contact_id", duplicate.contact_id)
+      .single();
+    expect(duplicatePhone.error).toBeNull();
+    const duplicateObservation = await admin
+      .from("contact_phone_observations")
+      .select("id")
+      .eq("contact_id", duplicate.contact_id)
+      .single();
+    expect(duplicateObservation.error).toBeNull();
+    const duplicateSource = await admin
+      .from("source_attributions")
+      .select("id")
+      .eq("opportunity_id", duplicate.opportunity_id)
+      .single();
+    expect(duplicateSource.error).toBeNull();
+
+    const merged = await owner.rpc("merge_contacts", {
+      duplicate_contact_id: duplicate.contact_id,
+      expected_duplicate_version: await contactVersion(duplicate.contact_id),
+      expected_primary_version: await contactVersion(primary.contact_id),
+      primary_contact_id: primary.contact_id,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+    });
+    expect(merged.error, aggregateKind).toBeNull();
+    const mergeResult = merged.data as {
+      contact_merge_id: string;
+      duplicate_version: number;
+      primary_version: number;
+    };
+
+    if (aggregateKind === "phone") {
+      const tamper = await admin
+        .from("contact_phones")
+        .update({ verified_at: new Date().toISOString() })
+        .eq("id", duplicatePhone.data!.id);
+      expect(tamper.error).toBeNull();
+    } else if (aggregateKind === "phone_observation") {
+      const tamper = await admin
+        .from("contact_phone_observations")
+        .update({ source_type: "alterado-depois-da-fusao" })
+        .eq("id", duplicateObservation.data!.id);
+      expect(tamper.error).toBeNull();
+    } else if (aggregateKind === "participant") {
+      const tamper = await admin
+        .from("opportunity_participants")
+        .update({ display_name: "Participante alterado" })
+        .eq("id", participantId);
+      expect(tamper.error).toBeNull();
+    } else if (aggregateKind === "source") {
+      const tamper = await admin
+        .from("source_attributions")
+        .delete()
+        .eq("id", duplicateSource.data!.id);
+      expect(tamper.error).toBeNull();
+    } else if (aggregateKind === "opportunity") {
+      const tamper = await admin
+        .from("opportunities")
+        .update({ source_type: "alterado-depois-da-fusao" })
+        .eq("id", duplicate.opportunity_id);
+      expect(tamper.error).toBeNull();
+    } else if (aggregateKind === "conversation") {
+      const tamper = await admin
+        .from("conversations")
+        .update({ updated_at: new Date(Date.now() + 60_000).toISOString() })
+        .eq("id", conversationId);
+      expect(tamper.error).toBeNull();
+    } else {
+      const tamper = await admin
+        .from("opt_outs")
+        .update({ reason: "Pedido de não contato alterado depois da fusão" })
+        .eq("id", optOutId);
+      expect(tamper.error).toBeNull();
+    }
+
+    const reversal = await owner.rpc("reverse_contact_merge", {
+      expected_duplicate_version: mergeResult.duplicate_version,
+      expected_primary_version: mergeResult.primary_version,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_contact_merge_id: mergeResult.contact_merge_id,
+    });
+    expect(reversal.error?.code, aggregateKind).toBe("23514");
+    expect(reversal.error?.message, aggregateKind).toContain(
+      "aggregate changed",
+    );
+
+    const unchangedContact = await admin
+      .from("contacts")
+      .select("merged_into_contact_id, status")
+      .eq("id", duplicate.contact_id)
+      .single();
+    expect(unchangedContact.data, aggregateKind).toEqual({
+      merged_into_contact_id: primary.contact_id,
+      status: "merged",
+    });
+    const unchangedOpportunity = await admin
+      .from("opportunities")
+      .select("contact_id")
+      .eq("id", duplicate.opportunity_id)
+      .single();
+    expect(unchangedOpportunity.data?.contact_id, aggregateKind).toBe(
+      primary.contact_id,
+    );
+
+    if (aggregateKind === "opt_out") {
+      const preservedOptOut = await admin
+        .from("opt_outs")
+        .select("reason")
+        .eq("id", optOutId)
+        .single();
+      expect(preservedOptOut.data?.reason).toBe(
+        "Pedido de não contato alterado depois da fusão",
+      );
+    }
+  }
 });
 
 test("canonical Contact locks make reciprocal merge races deterministic without deadlock", async () => {

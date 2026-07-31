@@ -542,6 +542,8 @@ test("deactivation revokes sessions, stops Offers and returns human work without
   const scheduledContactId = randomUUID();
   const scheduledCallId = randomUUID();
   const scheduledAssignmentId = randomUUID();
+  const activeConversationId = randomUUID();
+  const sleepingConversationId = randomUUID();
   await insertFixture("contacts", {
     display_name: "Contato de Desativação Sintético",
     id: contactId,
@@ -606,6 +608,27 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     membership_id: brokerMembershipId,
     operation_id: operationId,
     organization_id: organizationId,
+  });
+  await insertFixture("conversations", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: contactId,
+    id: activeConversationId,
+    operation_id: operationId,
+    opportunity_id: opportunityId,
+    organization_id: organizationId,
+    ownership_type: "human",
+    status: "active",
+  });
+  await insertFixture("conversations", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: scheduledContactId,
+    id: sleepingConversationId,
+    operation_id: operationId,
+    opportunity_id: scheduledOpportunityId,
+    organization_id: organizationId,
+    ownership_type: "human",
+    sleeping_since: new Date().toISOString(),
+    status: "sleeping",
   });
 
   const url = requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL");
@@ -715,6 +738,66 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     .eq("id", opportunityId)
     .single();
   expect(opportunity.data?.assigned_membership_id).toBeNull();
+  const transferredConversations = await admin
+    .from("conversations")
+    .select("assigned_membership_id, id, ownership_type, status, version")
+    .in("id", [activeConversationId, sleepingConversationId])
+    .order("id");
+  expect(transferredConversations.error).toBeNull();
+  expect(
+    transferredConversations.data?.map((conversation) => ({
+      assigned_membership_id: conversation.assigned_membership_id,
+      ownership_type: conversation.ownership_type,
+      status: conversation.status,
+      version: conversation.version,
+    })),
+  ).toEqual(
+    expect.arrayContaining([
+      {
+        assigned_membership_id: ownerMembershipId,
+        ownership_type: "human",
+        status: "active",
+        version: 2,
+      },
+      {
+        assigned_membership_id: ownerMembershipId,
+        ownership_type: "human",
+        status: "sleeping",
+        version: 2,
+      },
+    ]),
+  );
+  const ownershipAudit = await database<
+    {
+      after_state: {
+        assigned_membership_id: string;
+        pedro_ownership: boolean;
+        random_reassignment: boolean;
+      };
+      before_state: { assigned_membership_id: string };
+      target_id: string;
+    }[]
+  >`
+    select target_id, before_state, after_state
+    from audit.audit_events
+    where target_id in (${activeConversationId}, ${sleepingConversationId})
+      and action =
+        'conversation.ownership_transferred_on_member_deactivation'
+    order by target_id
+  `;
+  expect(ownershipAudit).toHaveLength(2);
+  for (const audit of ownershipAudit) {
+    expect(audit.before_state.assigned_membership_id).toBe(
+      brokerMembershipId,
+    );
+    expect(audit.after_state).toEqual(
+      expect.objectContaining({
+        assigned_membership_id: ownerMembershipId,
+        pedro_ownership: false,
+        random_reassignment: false,
+      }),
+    );
+  }
   const assignment = await admin
     .from("call_assignments")
     .select("revoke_reason, revoked_at")
@@ -743,6 +826,7 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     "membership_permissions",
     "staff_profiles",
     "opportunities",
+    "conversations",
     "calls",
     "call_offers",
     "call_assignments",
