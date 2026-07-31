@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { getPreviewEnvironment } from "@/lib/environment";
+import { wakeDurableWorker } from "@/lib/durable-worker";
 import { createRequestContext, writeLog } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
@@ -101,6 +102,9 @@ export async function POST(request: Request) {
       );
     }
 
+    // Acceptance is already committed. Wake is intentionally best-effort;
+    // the 5-second durable recovery path processes the same queue.
+    void wakeDurableWorker(context);
     writeLog("simulator.inbound", { ...context, outcome: "accepted" });
     return NextResponse.json(data, { status: 202 });
   } catch (error) {
