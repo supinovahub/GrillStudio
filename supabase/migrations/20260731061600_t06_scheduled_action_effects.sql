@@ -23,7 +23,9 @@ create table private.scheduled_job_sequences (
 
 alter table public.scheduled_jobs
   add column effect_key text,
-  add column aggregate_sequence bigint;
+  add column aggregate_sequence bigint,
+  add column contention_count integer not null default 0
+    check (contention_count >= 0);
 
 update public.scheduled_jobs
 set effect_key = 'scheduled:' || encode(
@@ -92,6 +94,11 @@ alter table public.scheduled_jobs
 
 create index scheduled_jobs_effect_key_idx
   on public.scheduled_jobs (organization_id, operation_id, effect_key);
+
+comment on column public.scheduled_jobs.attempts is
+  'Durable execution failures only. Dispatch, PGMQ read_ct and contention do not consume this budget.';
+comment on column public.scheduled_jobs.contention_count is
+  'Predecessor or lease waits. Informational only and never a dead-letter budget.';
 
 create or replace function private.prepare_scheduled_job_identity()
 returns trigger
@@ -277,7 +284,6 @@ begin
       status = 'leased',
       lease_token = gen_random_uuid(),
       lease_until = now() + interval '30 seconds',
-      attempts = attempts + 1,
       updated_at = now()
     where id = job_record.id
     returning * into strict job_record;
@@ -318,6 +324,84 @@ $$;
 revoke all on function private.dispatch_due_scheduled_jobs(integer)
   from public, anon, authenticated, service_role;
 
+-- These local classifiers exist before the shared worker helpers introduced
+-- by the next review migration. This prevents the already-enabled recovery
+-- Cron from observing an unresolved function between migrations.
+create or replace function private.classify_scheduled_failure(
+  error_sqlstate text
+)
+returns text
+language sql
+immutable
+security invoker
+set search_path = ''
+as $$
+  select case
+    when error_sqlstate in ('40001', '40P01', '55P03', '57014')
+      or error_sqlstate like '08%'
+      or error_sqlstate like '53%'
+      or error_sqlstate like '57P%'
+      then 'retryable'
+    when error_sqlstate in ('23503', '23505', '23514', 'PGRST')
+      then 'conflict'
+    when error_sqlstate in ('22023', '22P02', '23502', '42501', 'P0002')
+      then 'non_retryable'
+    else 'unknown'
+  end;
+$$;
+
+create or replace function private.scheduled_retry_delay_seconds(
+  failure_attempt integer,
+  maximum_delay integer default 900
+)
+returns integer
+language plpgsql
+volatile
+security invoker
+set search_path = ''
+as $$
+declare
+  base_delay integer;
+  jitter_ceiling integer;
+begin
+  base_delay := least(
+    greatest(maximum_delay, 2),
+    greatest(
+      2,
+      power(2, least(greatest(failure_attempt, 1), 8))::integer
+    )
+  );
+  jitter_ceiling := greatest(1, ceil(base_delay * 0.25)::integer);
+  return least(
+    greatest(maximum_delay, 2),
+    base_delay + floor(random() * (jitter_ceiling + 1))::integer
+  );
+end;
+$$;
+
+create or replace function private.scheduled_contention_delay_seconds(
+  contention_attempt integer
+)
+returns integer
+language sql
+volatile
+security invoker
+set search_path = ''
+as $$
+  select least(
+    15,
+    2 + least(greatest(contention_attempt, 1), 8)
+      + floor(random() * 4)::integer
+  );
+$$;
+
+revoke all on function private.classify_scheduled_failure(text)
+  from public, anon, authenticated, service_role;
+revoke all on function private.scheduled_retry_delay_seconds(integer, integer)
+  from public, anon, authenticated, service_role;
+revoke all on function private.scheduled_contention_delay_seconds(integer)
+  from public, anon, authenticated, service_role;
+
 create or replace function private.consume_scheduled_actions(
   maximum_messages integer default 10,
   target_worker_id uuid default gen_random_uuid(),
@@ -342,6 +426,9 @@ declare
   reconciled_count integer := 0;
   stale_count integer := 0;
   error_state text;
+  failure_class text;
+  next_failure_attempt integer;
+  contention_attempt integer;
 begin
   if maximum_messages not between 1 and 100
     or visibility_seconds not between 5 and 3600
@@ -354,6 +441,10 @@ begin
     queue_record := null;
     job_record := null;
     job_id_value := null;
+    request_hash_value := null;
+    failure_class := null;
+    next_failure_attempt := null;
+    contention_attempt := null;
 
     select claimed.* into queue_record
     from pgmq.read(
@@ -379,7 +470,7 @@ begin
           gen_random_uuid(),
           'invalid-scheduled-envelope:' || queue_record.msg_id::text,
           jsonb_build_object('queue_message_id', queue_record.msg_id),
-          queue_record.read_ct,
+          1,
           'non_retryable',
           'invalid_envelope',
           null,
@@ -404,7 +495,7 @@ begin
           job_id_value,
           'missing-scheduled-job:' || job_id_value::text,
           jsonb_build_object('scheduled_job_id', job_id_value),
-          queue_record.read_ct,
+          1,
           'non_retryable',
           'artifact_missing',
           null,
@@ -454,7 +545,7 @@ begin
         job_record.aggregate_id,
         job_record.aggregate_sequence,
         target_worker_id,
-        queue_record.read_ct,
+        greatest(job_record.attempts + 1, 1),
         'claimed',
         job_record.trace_id,
         job_record.correlation_id
@@ -465,13 +556,14 @@ begin
         or queue_record.message ->> 'aggregate_sequence'
           is distinct from job_record.aggregate_sequence::text
       then
+        next_failure_attempt := job_record.attempts + 1;
         perform private.dead_letter_queue_message(
           'scheduled_actions',
           queue_record.msg_id,
           job_record.id,
           job_record.effect_key,
           safe_envelope,
-          queue_record.read_ct,
+          next_failure_attempt,
           'non_retryable',
           'envelope_conflict',
           job_record.organization_id,
@@ -484,6 +576,7 @@ begin
           status = 'dead',
           lease_token = null,
           lease_until = null,
+          attempts = next_failure_attempt,
           last_error_class = 'non_retryable',
           last_error_code = 'envelope_conflict',
           updated_at = now()
@@ -508,79 +601,22 @@ begin
         or job_record.queue_message_id <> queue_record.msg_id
       then
         if job_record.status = 'leased' then
+          update public.scheduled_jobs
+          set
+            contention_count = contention_count + 1,
+            updated_at = now()
+          where id = job_record.id
+          returning contention_count into strict contention_attempt;
           perform private.defer_queue_message(
             'scheduled_actions',
             queue_record.msg_id,
-            2
+            private.scheduled_contention_delay_seconds(contention_attempt)
           );
           deferred_count := deferred_count + 1;
         else
           perform pgmq.archive('scheduled_actions', queue_record.msg_id);
           reconciled_count := reconciled_count + 1;
         end if;
-        continue;
-      end if;
-
-      if queue_record.read_ct > job_record.max_attempts then
-        perform private.dead_letter_queue_message(
-          'scheduled_actions',
-          queue_record.msg_id,
-          job_record.id,
-          job_record.effect_key,
-          safe_envelope,
-          queue_record.read_ct,
-          'attempts_exhausted',
-          'max_attempts',
-          job_record.organization_id,
-          job_record.operation_id,
-          job_record.trace_id,
-          job_record.correlation_id
-        );
-        update public.scheduled_jobs
-        set
-          status = 'dead',
-          lease_token = null,
-          lease_until = null,
-          attempts = greatest(attempts, queue_record.read_ct),
-          last_error_class = 'attempts_exhausted',
-          last_error_code = 'max_attempts',
-          updated_at = now()
-        where id = job_record.id;
-        insert into private.processing_attempts (
-          organization_id,
-          operation_id,
-          queue_name,
-          queue_message_id,
-          envelope_id,
-          aggregate_type,
-          aggregate_id,
-          aggregate_sequence,
-          worker_id,
-          attempt,
-          state,
-          error_class,
-          error_code,
-          trace_id,
-          correlation_id
-        )
-        values (
-          job_record.organization_id,
-          job_record.operation_id,
-          'scheduled_actions',
-          queue_record.msg_id,
-          job_record.id,
-          job_record.aggregate_type,
-          job_record.aggregate_id,
-          job_record.aggregate_sequence,
-          target_worker_id,
-          queue_record.read_ct,
-          'dead_lettered',
-          'attempts_exhausted',
-          'max_attempts',
-          job_record.trace_id,
-          job_record.correlation_id
-        );
-        dead_count := dead_count + 1;
         continue;
       end if;
 
@@ -594,10 +630,16 @@ begin
           and earlier.aggregate_sequence < job_record.aggregate_sequence
           and earlier.status in ('leased', 'published')
       ) then
+        update public.scheduled_jobs
+        set
+          contention_count = contention_count + 1,
+          updated_at = now()
+        where id = job_record.id
+        returning contention_count into strict contention_attempt;
         perform private.defer_queue_message(
           'scheduled_actions',
           queue_record.msg_id,
-          2
+          private.scheduled_contention_delay_seconds(contention_attempt)
         );
         insert into private.processing_attempts (
           organization_id,
@@ -626,9 +668,9 @@ begin
           job_record.aggregate_id,
           job_record.aggregate_sequence,
           target_worker_id,
-          queue_record.read_ct,
+          contention_attempt,
           'deferred',
-          'conflict',
+          'contention',
           'earlier_effect_pending',
           job_record.trace_id,
           job_record.correlation_id
@@ -883,7 +925,6 @@ begin
       set
         status = 'completed',
         completed_at = now(),
-        attempts = greatest(attempts, queue_record.read_ct),
         last_error_class = null,
         last_error_code = null,
         updated_at = now()
@@ -949,7 +990,7 @@ begin
         job_record.aggregate_id,
         job_record.aggregate_sequence,
         target_worker_id,
-        queue_record.read_ct,
+        greatest(job_record.attempts + 1, 1),
         'succeeded',
         job_record.trace_id,
         job_record.correlation_id
@@ -957,32 +998,62 @@ begin
       processed_count := processed_count + 1;
     exception when others then
       get stacked diagnostics error_state = returned_sqlstate;
+      failure_class := private.classify_scheduled_failure(error_state);
 
-      if job_id_value is not null then
-        update public.scheduled_jobs
-        set
-          attempts = greatest(attempts, queue_record.read_ct),
-          last_error_class = left(error_state, 120),
-          last_error_code = left(error_state, 120),
-          updated_at = now()
-        where id = job_id_value
-          and status = 'published';
+      if job_record.id is null and job_id_value is not null then
+        select job.*
+        into job_record
+        from public.scheduled_jobs as job
+        where job.id = job_id_value
+        for update;
       end if;
 
-      perform private.defer_queue_message(
-        'scheduled_actions',
-        queue_record.msg_id,
-        least(
-          900,
-          greatest(
-            2,
-            power(2, least(queue_record.read_ct, 8))::integer
-              + floor(random() * 3)::integer
-          )
+      if job_record.id is null then
+        perform private.defer_queue_message(
+          'scheduled_actions',
+          queue_record.msg_id,
+          private.scheduled_retry_delay_seconds(1, 900)
+        );
+        deferred_count := deferred_count + 1;
+        continue;
+      end if;
+
+      next_failure_attempt := job_record.attempts + 1;
+      safe_envelope := coalesce(
+        safe_envelope,
+        jsonb_build_object(
+          'scheduled_job_id', job_record.id,
+          'organization_id', job_record.organization_id,
+          'operation_id', job_record.operation_id,
+          'aggregate_type', job_record.aggregate_type,
+          'aggregate_id', job_record.aggregate_id,
+          'aggregate_version', job_record.aggregate_version,
+          'aggregate_sequence', job_record.aggregate_sequence,
+          'effect_key', job_record.effect_key,
+          'trace_id', job_record.trace_id,
+          'correlation_id', job_record.correlation_id
         )
       );
 
-      if job_record.id is not null then
+      if failure_class = 'retryable'
+        and next_failure_attempt < job_record.max_attempts
+      then
+        update public.scheduled_jobs
+        set
+          attempts = next_failure_attempt,
+          last_error_class = failure_class,
+          last_error_code = left(error_state, 120),
+          updated_at = now()
+        where id = job_record.id
+          and status = 'published';
+        perform private.defer_queue_message(
+          'scheduled_actions',
+          queue_record.msg_id,
+          private.scheduled_retry_delay_seconds(
+            next_failure_attempt,
+            900
+          )
+        );
         insert into private.processing_attempts (
           organization_id,
           operation_id,
@@ -1010,15 +1081,131 @@ begin
           job_record.aggregate_id,
           job_record.aggregate_sequence,
           target_worker_id,
-          queue_record.read_ct,
+          next_failure_attempt,
           'retryable_failed',
-          left(error_state, 120),
+          failure_class,
           left(error_state, 120),
           job_record.trace_id,
           job_record.correlation_id
         );
+        deferred_count := deferred_count + 1;
+      else
+        if failure_class = 'unknown' then
+          if request_hash_value is null then
+            request_hash_value := encode(
+              sha256(
+                convert_to(
+                  jsonb_build_object(
+                    'dedupe_key', job_record.dedupe_key,
+                    'job_type', job_record.job_type,
+                    'aggregate_type', job_record.aggregate_type,
+                    'aggregate_id', job_record.aggregate_id,
+                    'aggregate_version', job_record.aggregate_version,
+                    'payload', job_record.payload
+                  )::text,
+                  'UTF8'
+                )
+              ),
+              'hex'
+            );
+          end if;
+
+          insert into private.effect_ledger (
+            organization_id,
+            operation_id,
+            effect_key,
+            effect_type,
+            request_hash,
+            state,
+            trace_id,
+            correlation_id,
+            started_at
+          )
+          values (
+            job_record.organization_id,
+            job_record.operation_id,
+            job_record.effect_key,
+            'scheduled_job.executed.v1',
+            request_hash_value,
+            'outcome_unknown',
+            job_record.trace_id,
+            job_record.correlation_id,
+            now()
+          )
+          on conflict (organization_id, operation_id, effect_key)
+          do update set
+            state = case
+              when private.effect_ledger.state = 'effect_recorded'
+                then 'effect_recorded'
+              else 'outcome_unknown'
+            end,
+            started_at = coalesce(
+              private.effect_ledger.started_at,
+              now()
+            ),
+            updated_at = now();
+        end if;
+
+        perform private.dead_letter_queue_message(
+          'scheduled_actions',
+          queue_record.msg_id,
+          job_record.id,
+          job_record.effect_key,
+          safe_envelope,
+          next_failure_attempt,
+          failure_class,
+          left(error_state, 120),
+          job_record.organization_id,
+          job_record.operation_id,
+          job_record.trace_id,
+          job_record.correlation_id
+        );
+        update public.scheduled_jobs
+        set
+          status = 'dead',
+          lease_token = null,
+          lease_until = null,
+          attempts = next_failure_attempt,
+          last_error_class = failure_class,
+          last_error_code = left(error_state, 120),
+          updated_at = now()
+        where id = job_record.id;
+        insert into private.processing_attempts (
+          organization_id,
+          operation_id,
+          queue_name,
+          queue_message_id,
+          envelope_id,
+          aggregate_type,
+          aggregate_id,
+          aggregate_sequence,
+          worker_id,
+          attempt,
+          state,
+          error_class,
+          error_code,
+          trace_id,
+          correlation_id
+        )
+        values (
+          job_record.organization_id,
+          job_record.operation_id,
+          'scheduled_actions',
+          queue_record.msg_id,
+          job_record.id,
+          job_record.aggregate_type,
+          job_record.aggregate_id,
+          job_record.aggregate_sequence,
+          target_worker_id,
+          next_failure_attempt,
+          'dead_lettered',
+          failure_class,
+          left(error_state, 120),
+          job_record.trace_id,
+          job_record.correlation_id
+        );
+        dead_count := dead_count + 1;
       end if;
-      deferred_count := deferred_count + 1;
     end;
   end loop;
 

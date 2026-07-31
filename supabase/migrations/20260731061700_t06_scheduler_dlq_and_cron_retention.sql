@@ -287,6 +287,43 @@ begin
     and effect.effect_key = job_record.effect_key
   for update;
 
+  if effect_record.state = 'outcome_unknown' then
+    insert into audit.audit_events (
+      organization_id,
+      operation_id,
+      actor_user_id,
+      action,
+      target_type,
+      target_id,
+      before_state,
+      after_state,
+      trace_id,
+      correlation_id
+    )
+    values (
+      job_record.organization_id,
+      job_record.operation_id,
+      auth.uid(),
+      'dead_letter.replay_outcome_unknown_rejected',
+      'dead_letter',
+      letter_record.id,
+      jsonb_build_object('status', letter_record.status),
+      jsonb_build_object(
+        'status', 'pending',
+        'reason', 'effect_outcome_requires_reconciliation',
+        'effect_key_preserved', true
+      ),
+      request_trace_id,
+      request_correlation_id
+    );
+
+    return jsonb_build_object(
+      'status', 'rejected_outcome_unknown',
+      'reason', 'effect_outcome_requires_reconciliation',
+      'dead_letter_id', letter_record.id
+    );
+  end if;
+
   if effect_record.state = 'effect_recorded'
     or exists (
       select 1
@@ -486,7 +523,8 @@ begin
     queue_message_id = queue_id,
     published_at = now(),
     completed_at = null,
-    attempts = attempts + 1,
+    attempts = 0,
+    contention_count = 0,
     last_error_class = null,
     last_error_code = null,
     updated_at = now()
