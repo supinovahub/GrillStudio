@@ -273,6 +273,12 @@ test("dez webhooks iguais produzem um efeito e raw divergente conflita", async (
 
 test("dois consumidores preservam a ordem canônica de cem mensagens", async () => {
   const chatId = `ordered-${suffix}`;
+  const deadlocksBefore = await database<Array<{ total: number }>>`
+    select deadlocks::integer as total
+    from pg_stat_database
+    where datname = current_database()
+  `;
+  const concurrencyStartedAt = Date.now();
   const accepted = [];
   let accepting = true;
   const concurrentWorker = (async () => {
@@ -294,6 +300,12 @@ test("dois consumidores preservam a ordem canônica de cem mensagens", async () 
   }
   accepting = false;
   await concurrentWorker;
+  const concurrencyElapsedMs = Date.now() - concurrencyStartedAt;
+  const deadlocksAfter = await database<Array<{ total: number }>>`
+    select deadlocks::integer as total
+    from pg_stat_database
+    where datname = current_database()
+  `;
   expect(
     accepted
       .filter((result) => result.error)
@@ -302,8 +314,31 @@ test("dois consumidores preservam a ordem canônica de cem mensagens", async () 
         message: result.error!.message,
       })),
   ).toEqual([]);
+  expect(deadlocksAfter[0]!.total - deadlocksBefore[0]!.total).toBe(0);
+  expect(concurrencyElapsedMs).toBeLessThan(30_000);
 
-  await Promise.all([drain(100), drain(100)]);
+  for (let recoveryRound = 0; recoveryRound < 100; recoveryRound += 1) {
+    await database`
+      select pgmq.set_vt(
+        'inbound_whatsapp',
+        queued.msg_id,
+        0
+      )
+      from pgmq.q_inbound_whatsapp as queued
+      join private.webhook_inbox as inbox
+        on inbox.id = (queued.message ->> 'inbox_id')::uuid
+      where inbox.connection_id = ${connectionId}::uuid
+        and inbox.provider_event_id like 'ordered-%'
+    `;
+    await drain(100);
+    const progress = await database<Array<{ total: number }>>`
+      select count(*)::integer as total
+      from public.messages
+      where connection_id = ${connectionId}::uuid
+        and provider_message_id like 'ordered-%'
+    `;
+    if (progress[0]!.total === 100) break;
+  }
   const order = await database<
     Array<{
       correctly_ordered: number;
@@ -1024,6 +1059,28 @@ test("predecessor lento não consome o orçamento nem manda sucessor para DLQ", 
     await sql`
       select private.consume_scheduled_actions(10, gen_random_uuid(), 30)
     `;
+    for (let recoveryAttempt = 0; recoveryAttempt < 5; recoveryAttempt += 1) {
+      const pending = await sql<Array<{ count: number }>>`
+        select count(*)::integer as count
+        from public.scheduled_jobs
+        where aggregate_id = ${aggregateId}::uuid
+          and status <> 'completed'
+      `;
+      if (pending[0]!.count === 0) {
+        break;
+      }
+      await sql`
+        select *
+        from pgmq.set_vt(
+          'scheduled_actions',
+          ${successor.queue_message_id},
+          0
+        )
+      `;
+      await sql`
+        select private.consume_scheduled_actions(10, gen_random_uuid(), 30)
+      `;
+    }
 
     const completed = await sql<
       Array<{ executions: number; statuses: string[] }>
@@ -1245,17 +1302,42 @@ test("poison em reconciliation é limitado ao batch e não aborta o runner", asy
 });
 
 test("reconciliation forjada não altera outbound vivo e o efeito ainda executa", async () => {
+  const fixtureInbound = await accept(
+    event(
+      `forged-reconciliation-seed-${suffix}`,
+      `forged-reconciliation-chat-${suffix}`,
+    ),
+  );
+  expect(fixtureInbound.error).toBeNull();
+  await drain();
+
   await database.begin(async (sql) => {
     await sql`select pgmq.purge_queue('outbound_whatsapp')`;
     await sql`select pgmq.purge_queue('reconciliation')`;
     const conversations = await sql<
       Array<{ id: string; version: number }>
     >`
-      select id, version
-      from public.conversations
-      where connection_id = ${connectionId}::uuid
-      order by created_at
-      limit 1
+      with target as (
+        select id
+        from public.conversations
+        where connection_id = ${connectionId}::uuid
+        order by opened_at, id
+        limit 1
+        for update
+      )
+      update public.conversations as conversation
+      set
+        status = 'active',
+        ownership_type = 'human',
+        assigned_membership_id = ${ownerMembershipId}::uuid,
+        sleeping_since = null,
+        closed_at = null,
+        is_paused = false,
+        pending_return = false,
+        updated_at = now()
+      from target
+      where conversation.id = target.id
+      returning conversation.id, conversation.version
     `;
     const conversation = conversations[0]!;
     const messageId = randomUUID();
@@ -1377,6 +1459,7 @@ test("reconciliation forjada não altera outbound vivo e o efeito ainda executa"
 
     const preserved = await sql<
       Array<{
+        dead_letter_id: string;
         failure_code: string;
         outbound_queued: number;
         status: string;
@@ -1390,6 +1473,12 @@ test("reconciliation forjada não altera outbound vivo e o efeito ainda executa"
           where queued.msg_id = event.queue_message_id
         ) as outbound_queued,
         (
+          select letter.id
+          from private.dead_letters as letter
+          where letter.source_queue = 'reconciliation'
+            and letter.source_message_id = ${forged[0]!.id}
+        ) as dead_letter_id,
+        (
           select letter.failure_code
           from private.dead_letters as letter
           where letter.source_queue = 'reconciliation'
@@ -1399,10 +1488,73 @@ test("reconciliation forjada não altera outbound vivo e o efeito ainda executa"
       where event.id = ${eventId}::uuid
     `;
     expect(preserved[0]).toEqual({
+      dead_letter_id: expect.any(String),
       failure_code: "queue_binding_mismatch",
       outbound_queued: 1,
       status: "published",
     });
+
+    const canonicalBeforeReplay = await sql`
+      select
+        event.status,
+        event.target_queue,
+        event.queue_message_id,
+        (
+          select count(*)::integer
+          from pgmq.q_outbound_whatsapp as queued
+          where queued.msg_id = event.queue_message_id
+        ) as outbound_queued,
+        (
+          select count(*)::integer
+          from private.effect_ledger as effect
+          where effect.organization_id = event.organization_id
+            and effect.operation_id = event.operation_id
+            and effect.effect_key = event.idempotency_key
+        ) as effects
+      from private.outbox_events as event
+      where event.id = ${eventId}::uuid
+    `;
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        jsonb_build_object(
+          'role', 'authenticated',
+          'sub', ${ownerUserId}::text
+        )::text,
+        true
+      )
+    `;
+    const rejectedReplay = await sql<Array<{ result: { status: string } }>>`
+      select public.replay_dead_letter(
+        ${preserved[0]!.dead_letter_id}::uuid,
+        gen_random_uuid(),
+        gen_random_uuid()
+      ) as result
+    `;
+    expect(rejectedReplay[0]!.result.status).toBe(
+      "rejected_non_replayable",
+    );
+    const canonicalAfterReplay = await sql`
+      select
+        event.status,
+        event.target_queue,
+        event.queue_message_id,
+        (
+          select count(*)::integer
+          from pgmq.q_outbound_whatsapp as queued
+          where queued.msg_id = event.queue_message_id
+        ) as outbound_queued,
+        (
+          select count(*)::integer
+          from private.effect_ledger as effect
+          where effect.organization_id = event.organization_id
+            and effect.operation_id = event.operation_id
+            and effect.effect_key = event.idempotency_key
+        ) as effects
+      from private.outbox_events as event
+      where event.id = ${eventId}::uuid
+    `;
+    expect(canonicalAfterReplay).toEqual(canonicalBeforeReplay);
 
     await sql`
       select set_config(
@@ -1445,7 +1597,7 @@ test("replay preserva DLQ quando efeito pode estar em voo", async () => {
       select id, version
       from public.conversations
       where connection_id = ${connectionId}::uuid
-      order by created_at
+      order by opened_at, id
       limit 1
     `;
     const conversation = conversations[0]!;
@@ -1840,6 +1992,39 @@ test("payload expirado resolve DLQ e replay rejeita sem republicar", async () =>
     `;
     const deadLetterId = letters[0]!.id;
     await sql`
+      update private.dead_letters
+      set created_at = now() - interval '100 years'
+      where id = ${deadLetterId}::uuid
+    `;
+    await sql`
+      select private.dead_letter_queue_message(
+        'inbound_whatsapp',
+        sent.msg_id,
+        ${inbox.id}::uuid,
+        ${`webhook:${connectionId}:${messageId}:extra:`}
+          || fixture.ordinal::text,
+        ${sql.json(envelope)}::jsonb,
+        1,
+        'non_retryable',
+        'synthetic_payload_expiry',
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        ${inbox.trace_id}::uuid,
+        ${inbox.correlation_id}::uuid
+      )
+      from generate_series(1, 2) as fixture(ordinal)
+      cross join lateral pgmq.send(
+        'inbound_whatsapp',
+        jsonb_build_object(
+          'inbox_id',
+          ${inbox.id}::uuid,
+          'fixture_ordinal',
+          fixture.ordinal
+        ),
+        0
+      ) as sent(msg_id)
+    `;
+    await sql`
       update private.webhook_inbox
       set
         status = 'dead',
@@ -1847,7 +2032,7 @@ test("payload expirado resolve DLQ e replay rejeita sem republicar", async () =>
         processed_at = null,
         last_error_class = 'non_retryable',
         last_error_code = 'synthetic_payload_expiry',
-        updated_at = now() - interval '2 hours'
+        updated_at = now() - interval '100 years'
       where id = ${inbox.id}::uuid
     `;
     await sql`
@@ -1864,6 +2049,62 @@ test("payload expirado resolve DLQ e replay rejeita sem republicar", async () =>
       on conflict (organization_id, operation_id)
       do update set webhook_raw_retention = excluded.webhook_raw_retention
     `;
+    const boundedPrune = await sql<
+      Array<{
+        result: {
+          pending_replays_expired: number;
+          raw_webhooks_purged: number;
+        };
+      }>
+    >`
+      select private.prune_durable_sensitive_material(1) as result
+    `;
+    expect(boundedPrune[0]!.result).toEqual(
+      expect.objectContaining({
+        pending_replays_expired: 1,
+        raw_webhooks_purged: 0,
+      }),
+    );
+    const boundedState = await sql<
+      Array<{
+        open_alerts: number;
+        pending_letters: number;
+        purged: boolean;
+        resolved_alerts: number;
+        resolved_letters: number;
+      }>
+    >`
+      select
+        count(*) filter (
+          where letter.status = 'pending'
+        )::integer as pending_letters,
+        count(*) filter (
+          where letter.status = 'resolved'
+        )::integer as resolved_letters,
+        count(*) filter (
+          where alert.status = 'open'
+        )::integer as open_alerts,
+        count(*) filter (
+          where alert.status = 'resolved'
+        )::integer as resolved_alerts,
+        inbox.raw_payload_purged_at is not null as purged
+      from private.webhook_inbox as inbox
+      join private.dead_letters as letter
+        on letter.envelope_id = inbox.id
+        and letter.source_queue = 'inbound_whatsapp'
+      join private.durable_processing_alerts as alert
+        on alert.dead_letter_id = letter.id
+      where inbox.id = ${inbox.id}::uuid
+      group by inbox.raw_payload_purged_at
+    `;
+    expect(boundedState[0]).toEqual({
+      open_alerts: 2,
+      pending_letters: 2,
+      purged: false,
+      resolved_alerts: 1,
+      resolved_letters: 1,
+    });
+
     const pruned = await sql<
       Array<{
         result: {
@@ -1874,7 +2115,7 @@ test("payload expirado resolve DLQ e replay rejeita sem republicar", async () =>
     >`
       select private.prune_durable_sensitive_material(100) as result
     `;
-    expect(pruned[0]!.result.pending_replays_expired).toBeGreaterThanOrEqual(1);
+    expect(pruned[0]!.result.pending_replays_expired).toBeGreaterThanOrEqual(2);
     expect(pruned[0]!.result.raw_webhooks_purged).toBeGreaterThanOrEqual(1);
 
     await sql`
@@ -2000,6 +2241,50 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
       total: 5,
     });
 
+    await sql`
+      do $probe$
+      declare
+        archived_message_id bigint;
+      begin
+        for fixture_index in 1..3 loop
+          archived_message_id := pgmq.send(
+            'scheduled_actions',
+            jsonb_build_object(
+              'probe',
+              gen_random_uuid(),
+              'fixture_index',
+              fixture_index
+            ),
+            0
+          );
+          perform pgmq.archive('scheduled_actions', archived_message_id);
+          update pgmq.a_scheduled_actions
+          set archived_at = now() - interval '8 days'
+          where msg_id = archived_message_id;
+        end loop;
+      end
+      $probe$
+    `;
+    const hotQueuePrune = await sql<
+      Array<{
+        result: {
+          a_scheduled_actions: number;
+          total: number;
+        };
+      }>
+    >`
+      select private.prune_t06_queue_archives(
+        interval '7 days',
+        2
+      ) as result
+    `;
+    expect(hotQueuePrune[0]!.result).toEqual(
+      expect.objectContaining({
+        a_scheduled_actions: 2,
+        total: 2,
+      }),
+    );
+
     const deadLetterId = randomUUID();
     const alertId = randomUUID();
     const traceId = randomUUID();
@@ -2122,5 +2407,105 @@ test("retenção limita arquivos PGMQ e permite resolver alerta de infraestrutur
       resolution_trace_id: traceId,
       service_audits: 1,
     });
+  });
+});
+
+test("resolução e redelivery de alerta de infraestrutura não invertem locks", async () => {
+  const deadLetterId = randomUUID();
+  const envelopeId = randomUUID();
+  const traceId = randomUUID();
+  const correlationId = randomUUID();
+  const sourceMessageId = (
+    800000000000000000n + BigInt(Date.now())
+  ).toString();
+
+  await database`
+    select private.dead_letter_queue_message(
+      'reconciliation',
+      ${sourceMessageId}::bigint,
+      ${envelopeId}::uuid,
+      ${`synthetic:infrastructure-concurrency:${suffix}`},
+      '{}'::jsonb,
+      1,
+      'infrastructure',
+      'synthetic_infrastructure_concurrency',
+      null,
+      null,
+      ${traceId}::uuid,
+      ${correlationId}::uuid
+    )
+  `;
+  const fixture = await database<Array<{ alert_id: string }>>`
+    select alert.id as alert_id
+    from private.durable_processing_alerts as alert
+    join private.dead_letters as letter
+      on letter.id = alert.dead_letter_id
+    where letter.source_queue = 'reconciliation'
+      and letter.source_message_id = ${sourceMessageId}::bigint
+  `;
+  const alertId = fixture[0]!.alert_id;
+  const deadlocksBefore = await database<Array<{ total: number }>>`
+    select deadlocks::integer as total
+    from pg_stat_database
+    where datname = current_database()
+  `;
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await Promise.all([
+      database.begin(async (sql) => {
+        await sql`
+          select set_config(
+            'request.jwt.claims',
+            '{"role":"service_role"}',
+            true
+          )
+        `;
+        await sql`
+          select public.resolve_infrastructure_durable_alert(
+            ${alertId}::uuid,
+            gen_random_uuid(),
+            gen_random_uuid()
+          )
+        `;
+      }),
+      database.begin(async (sql) => {
+        await sql`
+          select private.dead_letter_queue_message(
+            'reconciliation',
+            ${sourceMessageId}::bigint,
+            ${envelopeId}::uuid,
+            ${`synthetic:infrastructure-concurrency:${suffix}`},
+            '{}'::jsonb,
+            ${attempt + 2},
+            'infrastructure',
+            'synthetic_infrastructure_concurrency',
+            null,
+            null,
+            ${traceId}::uuid,
+            ${correlationId}::uuid
+          )
+        `;
+      }),
+    ]);
+  }
+
+  const deadlocksAfter = await database<Array<{ total: number }>>`
+    select deadlocks::integer as total
+    from pg_stat_database
+    where datname = current_database()
+  `;
+  expect(deadlocksAfter[0]!.total - deadlocksBefore[0]!.total).toBe(0);
+
+  await database.begin(async (sql) => {
+    await sql`
+      select pgmq.archive('dead_letter', queued.msg_id)
+      from pgmq.q_dead_letter as queued
+      where queued.message ->> 'dead_letter_id' = ${deadLetterId}::text
+    `;
+    await sql`
+      delete from private.dead_letters
+      where source_queue = 'reconciliation'
+        and source_message_id = ${sourceMessageId}::bigint
+    `;
   });
 });
