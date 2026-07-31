@@ -3,7 +3,7 @@ import type { MemberWorkspace, OperationShell } from "@/types/database";
 
 export async function getMemberWorkspace(): Promise<MemberWorkspace | null> {
   const supabase = await createClient();
-  const { data, error } = await supabase.rpc("get_member_workspace");
+  const { data, error } = await supabase.rpc("get_member_workspace_v2");
 
   if (error) {
     throw new Error("Não foi possível carregar a área de trabalho.");
