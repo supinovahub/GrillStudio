@@ -39,6 +39,13 @@ export default async function KanbanPage({
   if (!workspace) {
     redirect("/aguardando-aprovacao");
   }
+  if (
+    !workspace.member_roles.some((role) =>
+      ["owner", "manager"].includes(role),
+    )
+  ) {
+    redirect("/app/meu-pipeline");
+  }
 
   const board = await getPipelineBoard(workspace.operation_id);
   const statusMessage = params.resultado

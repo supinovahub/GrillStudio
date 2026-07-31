@@ -3,7 +3,6 @@ import Link from "next/link";
 import { transitionOpportunityAction } from "@/lib/leads/actions";
 import {
   pipelineStageLabels,
-  pipelineStages,
   type PipelineBoard as PipelineBoardData,
   type PipelineStage,
 } from "@/lib/leads/types";
@@ -46,39 +45,62 @@ export function PipelineBoard({
                   <article className="kanban-card" key={card.id}>
                     <div className="kanban-card-heading">
                       <div>
-                        <Link href={`/app/leads/${card.id}`}>
-                          {card.display_name || "Nome não informado"}
-                        </Link>
-                        <span>{card.phone_e164}</span>
+                        {card.redacted ? (
+                          <strong>Lead protegido</strong>
+                        ) : (
+                          <Link href={`/app/leads/${card.id}`}>
+                            {card.display_name || "Nome não informado"}
+                          </Link>
+                        )}
+                        <span>
+                          {card.redacted
+                            ? "Dados liberados somente pelo fluxo da Call"
+                            : card.phone_e164}
+                        </span>
                       </div>
-                      {card.has_opt_out ? (
+                      {card.has_opt_out === true ? (
                         <span className="lead-opt-out">Opt-out</span>
                       ) : null}
                     </div>
                     <dl className="lead-card-facts">
                       <div>
                         <dt>Origem</dt>
-                        <dd>{card.source_type}</dd>
+                        <dd>{card.source_type || "Não liberada"}</dd>
                       </div>
                       <div>
                         <dt>Responsável</dt>
-                        <dd>{card.assigned_name || "Sem responsável"}</dd>
+                        <dd>
+                          {card.redacted
+                            ? "Você"
+                            : card.assigned_name || "Sem responsável"}
+                        </dd>
                       </div>
                       <div>
                         <dt>Tempo</dt>
-                        <dd>{formatElapsed(card.updated_at)}</dd>
+                        <dd>{formatElapsed(card.stage_entered_at)}</dd>
                       </div>
                       <div>
-                        <dt>Unidades</dt>
-                        <dd>
-                          {card.unit_count} ·{" "}
-                          {card.amount_scope === "total"
-                            ? "valor total"
-                            : "por unidade"}
-                        </dd>
+                        <dt>{card.redacted ? "Call" : "Unidades"}</dt>
+                        {card.redacted ? (
+                          <dd>
+                            {card.scheduled_for
+                              ? new Intl.DateTimeFormat("pt-BR", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                }).format(new Date(card.scheduled_for))
+                              : "Horário indisponível"}
+                          </dd>
+                        ) : (
+                          <dd>
+                            {card.unit_count} ·{" "}
+                            {card.amount_scope === "total"
+                              ? "valor total"
+                              : "por unidade"}
+                          </dd>
+                        )}
                       </div>
                     </dl>
-                    {card.stage !== "purchased" ? (
+                    {card.allowed_actions.length > 0 ? (
                       <details className="kanban-transition">
                         <summary>Alterar etapa</summary>
                         <form action={transitionOpportunityAction}>
@@ -107,13 +129,9 @@ export function PipelineBoard({
                               <option disabled value="">
                                 Selecione
                               </option>
-                              {pipelineStages
-                                .filter(
-                                  (target) => target.key !== card.stage,
-                                )
-                                .map((target) => (
-                                  <option key={target.key} value={target.key}>
-                                    {target.label}
+                              {card.allowed_actions.map((target) => (
+                                  <option key={target} value={target}>
+                                    {pipelineStageLabels[target]}
                                   </option>
                                 ))}
                             </select>
@@ -142,9 +160,14 @@ export function PipelineBoard({
                           </button>
                         </form>
                       </details>
-                    ) : (
+                    ) : card.stage === "purchased" ? (
                       <p className="kanban-closed">
                         {pipelineStageLabels.purchased} não reabre.
+                      </p>
+                    ) : (
+                      <p className="kanban-closed">
+                        A próxima movimentação pertence ao fluxo protegido
+                        desta etapa.
                       </p>
                     )}
                   </article>

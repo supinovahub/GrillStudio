@@ -9,11 +9,13 @@ const suffix = randomUUID().slice(0, 8);
 const password = `Preview-${randomUUID()}-A1!`;
 const ownerEmail = `pipeline-owner-${suffix}@example.com`;
 const brokerEmail = `pipeline-broker-${suffix}@example.com`;
+const dualRoleEmail = `pipeline-dual-${suffix}@example.com`;
 const outsiderEmail = `pipeline-outsider-${suffix}@example.com`;
 
 let admin: SupabaseClient;
 let owner: SupabaseClient;
 let broker: SupabaseClient;
+let dualRole: SupabaseClient;
 let outsider: SupabaseClient;
 let database: Sql;
 let organizationId = "";
@@ -22,6 +24,9 @@ let ownerId = "";
 let ownerMembershipId = "";
 let brokerId = "";
 let brokerMembershipId = "";
+let dualRoleId = "";
+let dualRoleMembershipId = "";
+let sameOrganizationSecondOperationId = "";
 let outsiderOrganizationId = "";
 let outsiderOperationId = "";
 let outsiderId = "";
@@ -112,7 +117,9 @@ async function createManualLead({
   expect(result.error).toBeNull();
   return result.data as {
     contact_id: string;
+    conversation_id?: string;
     opportunity_id: string;
+    ownership_type?: "human";
     phone_e164: string;
     stage: string;
   };
@@ -147,6 +154,16 @@ async function opportunityVersion(opportunityId: string): Promise<number> {
   return result.data!.version;
 }
 
+async function contactVersion(contactId: string): Promise<number> {
+  const result = await admin
+    .from("contacts")
+    .select("version")
+    .eq("id", contactId)
+    .single();
+  expect(result.error).toBeNull();
+  return result.data!.version;
+}
+
 test.beforeAll(async () => {
   const environment = validatePreviewEnvironment({
     appEnvironment: process.env.APP_ENVIRONMENT,
@@ -173,6 +190,7 @@ test.beforeAll(async () => {
   operationId = randomUUID();
   outsiderOrganizationId = randomUUID();
   outsiderOperationId = randomUUID();
+  sameOrganizationSecondOperationId = randomUUID();
 
   const ownerIdentity = await createAuthenticatedClient(ownerEmail);
   owner = ownerIdentity.client;
@@ -180,6 +198,9 @@ test.beforeAll(async () => {
   const brokerIdentity = await createAuthenticatedClient(brokerEmail);
   broker = brokerIdentity.client;
   brokerId = brokerIdentity.userId;
+  const dualRoleIdentity = await createAuthenticatedClient(dualRoleEmail);
+  dualRole = dualRoleIdentity.client;
+  dualRoleId = dualRoleIdentity.userId;
   const outsiderIdentity = await createAuthenticatedClient(outsiderEmail);
   outsider = outsiderIdentity.client;
   outsiderId = outsiderIdentity.userId;
@@ -197,6 +218,16 @@ test.beforeAll(async () => {
   });
   await insertFixture("operation_settings", {
     operation_id: operationId,
+    organization_id: organizationId,
+  });
+  await insertFixture("operations", {
+    id: sameOrganizationSecondOperationId,
+    is_default: false,
+    name: `Operação Mesma Imobiliária ${suffix}`,
+    organization_id: organizationId,
+  });
+  await insertFixture("operation_settings", {
+    operation_id: sameOrganizationSecondOperationId,
     organization_id: organizationId,
   });
 
@@ -235,6 +266,32 @@ test.beforeAll(async () => {
     whatsapp: "+5511888888888",
   });
 
+  dualRoleMembershipId = randomUUID();
+  await insertFixture("memberships", {
+    can_receive_calls: true,
+    id: dualRoleMembershipId,
+    organization_id: organizationId,
+    role: "manager",
+    status: "active",
+    user_id: dualRoleId,
+  });
+  await insertFixture("membership_roles", {
+    membership_id: dualRoleMembershipId,
+    organization_id: organizationId,
+    role: "broker",
+  });
+  await insertFixture("membership_operations", {
+    membership_id: dualRoleMembershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
+  await insertFixture("staff_profiles", {
+    full_name: "Gestor e Corretor",
+    membership_id: dualRoleMembershipId,
+    organization_id: organizationId,
+    whatsapp: "+5511777777777",
+  });
+
   await insertFixture("organizations", {
     id: outsiderOrganizationId,
     name: `Imobiliária Isolada ${suffix}`,
@@ -270,7 +327,11 @@ test.afterAll(async () => {
     return;
   }
 
-  for (const targetOperationId of [operationId, outsiderOperationId]) {
+  for (const targetOperationId of [
+    operationId,
+    sameOrganizationSecondOperationId,
+    outsiderOperationId,
+  ]) {
     await admin
       .from("membership_operations")
       .delete()
@@ -369,6 +430,48 @@ test("normalizes E.164 server-side, preserves original values and deduplicates o
   expect(duplicateRows).toEqual([]);
 });
 
+test("serializes concurrent exact-phone registrations into one Contact and distinct Opportunities", async () => {
+  const concurrentPhone = "(11) 94440-9090";
+  const attempts = await Promise.all(
+    Array.from({ length: 8 }, (_, index) =>
+      owner.rpc("create_manual_lead", {
+        amount_scope_value: "total",
+        internal_note_value: "",
+        lead_name: `Concorrente ${index}`,
+        lead_source: "concorrência sintética",
+        participant_name: "",
+        participant_phone_original: "",
+        pedro_context_value: "",
+        phone_original: concurrentPhone,
+        registration_action: "register",
+        request_correlation_id: randomUUID(),
+        request_trace_id: randomUUID(),
+        target_operation_id: operationId,
+        unit_count_value: 1,
+      }),
+    ),
+  );
+  for (const attempt of attempts) {
+    expect(attempt.error).toBeNull();
+  }
+
+  const payloads = attempts.map((attempt) => attempt.data as {
+    contact_id: string;
+    opportunity_id: string;
+  });
+  expect(new Set(payloads.map((payload) => payload.contact_id)).size).toBe(1);
+  expect(
+    new Set(payloads.map((payload) => payload.opportunity_id)).size,
+  ).toBe(8);
+
+  const phoneRows = await admin
+    .from("contact_phones")
+    .select("contact_id")
+    .eq("organization_id", organizationId)
+    .eq("e164", "+5511944409090");
+  expect(phoneRows.data).toHaveLength(1);
+});
+
 test("keeps Contact, Opportunity and Participant separate and does not send proactive requests", async () => {
   const lead = await createManualLead({
     action: "request_proactive",
@@ -429,7 +532,56 @@ test("keeps Contact, Opportunity and Participant separate and does not send proa
   );
 });
 
-test("rejects invalid or stale transitions and keeps current stage equal to the latest history", async () => {
+test("manual assume creates one human-owned Conversation without egress or commercial assignment", async () => {
+  const lead = await createManualLead({
+    action: "assume",
+    name: "Lead assumido sem envio",
+    phone: "(11) 96660-0001",
+  });
+
+  expect(lead.stage).toBe("in_service");
+  expect(lead.conversation_id).toBeTruthy();
+  expect(lead.ownership_type).toBe("human");
+
+  const opportunity = await admin
+    .from("opportunities")
+    .select("assigned_membership_id, stage")
+    .eq("id", lead.opportunity_id)
+    .single();
+  expect(opportunity.data).toEqual({
+    assigned_membership_id: null,
+    stage: "in_service",
+  });
+
+  const conversations = await admin
+    .from("conversations")
+    .select(
+      "assigned_membership_id, contact_id, opportunity_id, ownership_type, status",
+    )
+    .eq("opportunity_id", lead.opportunity_id);
+  expect(conversations.data).toEqual([
+    {
+      assigned_membership_id: ownerMembershipId,
+      contact_id: lead.contact_id,
+      opportunity_id: lead.opportunity_id,
+      ownership_type: "human",
+      status: "active",
+    },
+  ]);
+
+  const ownershipAudit = await database`
+    select after_state
+    from audit.audit_events
+    where target_id = ${lead.conversation_id!}::uuid
+      and action = 'conversation.assumed_on_manual_registration'
+  `;
+  expect(ownershipAudit).toHaveLength(1);
+  expect(ownershipAudit[0].after_state).toEqual(
+    expect.objectContaining({ egress_created: false }),
+  );
+});
+
+test("keeps generic transitions pre-Call and fails closed for T21/T24 stages", async () => {
   const lead = await createManualLead({
     name: "Pipeline Protegido",
     phone: "(11) 96666-5555",
@@ -450,13 +602,13 @@ test("rejects invalid or stale transitions and keeps current stage equal to the 
   const inService = await transition(lead.opportunity_id, "in_service", 1);
   expect(inService.error).toBeNull();
 
-  const withoutCall = await transition(
+  const withoutT21Command = await transition(
     lead.opportunity_id,
     "call_scheduled",
     2,
   );
-  expect(withoutCall.error?.code).toBe("23514");
-  expect(withoutCall.error?.message).toContain("call must be assigned");
+  expect(withoutT21Command.error?.code).toBe("23514");
+  expect(withoutT21Command.error?.message).toContain("domain command");
 
   await admin
     .from("opportunities")
@@ -472,21 +624,25 @@ test("rejects invalid or stale transitions and keeps current stage equal to the 
     scheduled_for: new Date(Date.now() + 86_400_000).toISOString(),
     status: "scheduled",
   });
+  await insertFixture("call_assignments", {
+    call_id: assignedCallId,
+    membership_id: brokerMembershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
 
   const callScheduled = await transition(
     lead.opportunity_id,
     "call_scheduled",
     2,
   );
-  expect(callScheduled.error).toBeNull();
+  expect(callScheduled.error?.code).toBe("23514");
 
   const brokerVisible = await broker
     .from("opportunities")
     .select("id, stage")
     .eq("id", lead.opportunity_id);
-  expect(brokerVisible.data).toEqual([
-    { id: lead.opportunity_id, stage: "call_scheduled" },
-  ]);
+  expect(brokerVisible.data).toEqual([]);
 
   const negotiation = await transition(
     lead.opportunity_id,
@@ -496,7 +652,7 @@ test("rejects invalid or stale transitions and keeps current stage equal to the 
     false,
     broker,
   );
-  expect(negotiation.error).toBeNull();
+  expect(negotiation.error?.code).toBe("42501");
 
   const current = await admin
     .from("opportunities")
@@ -511,7 +667,67 @@ test("rejects invalid or stale transitions and keeps current stage equal to the 
     .limit(1)
     .single();
   expect(history.data?.to_stage).toBe(current.data?.stage);
-  expect(current.data?.stage).toBe("negotiation");
+  expect(current.data?.stage).toBe("in_service");
+});
+
+test("tracks time in the current stage independently and keeps stage history append-only", async () => {
+  const lead = await createManualLead({
+    name: "Relógio de Etapa",
+    phone: "(11) 95550-6060",
+  });
+  const initial = await admin
+    .from("opportunities")
+    .select("stage_entered_at")
+    .eq("id", lead.opportunity_id)
+    .single();
+  expect(initial.data?.stage_entered_at).toBeTruthy();
+
+  await admin
+    .from("opportunities")
+    .update({ assigned_membership_id: brokerMembershipId })
+    .eq("id", lead.opportunity_id);
+  const afterAssignment = await admin
+    .from("opportunities")
+    .select("stage_entered_at")
+    .eq("id", lead.opportunity_id)
+    .single();
+  expect(afterAssignment.data?.stage_entered_at).toBe(
+    initial.data?.stage_entered_at,
+  );
+
+  const moved = await transition(
+    lead.opportunity_id,
+    "in_service",
+    await opportunityVersion(lead.opportunity_id),
+  );
+  expect(moved.error).toBeNull();
+  const afterStage = await admin
+    .from("opportunities")
+    .select("stage_entered_at")
+    .eq("id", lead.opportunity_id)
+    .single();
+  expect(
+    new Date(afterStage.data!.stage_entered_at).getTime(),
+  ).toBeGreaterThanOrEqual(
+    new Date(initial.data!.stage_entered_at).getTime(),
+  );
+
+  const history = await admin
+    .from("opportunity_stage_history")
+    .select("id")
+    .eq("opportunity_id", lead.opportunity_id)
+    .limit(1)
+    .single();
+  const updateHistory = await admin
+    .from("opportunity_stage_history")
+    .update({ reason: "tentativa de reescrita" })
+    .eq("id", history.data!.id);
+  expect(updateHistory.error?.code).toBe("42501");
+  const deleteHistory = await admin
+    .from("opportunity_stage_history")
+    .delete()
+    .eq("id", history.data!.id);
+  expect(deleteHistory.error?.code).toBe("42501");
 });
 
 test("list, detail and Kanban apply organization and broker scope through RLS", async () => {
@@ -531,6 +747,7 @@ test("list, detail and Kanban apply organization and broker scope through RLS", 
   expect(brokerNewRead.data).toEqual([]);
   const brokerNewBoard = await broker.rpc("get_pipeline_board", {
     target_operation_id: operationId,
+    view_scope: "my_pipeline",
   });
   const newCards = (
     brokerNewBoard.data as { cards: Array<{ id: string }> }
@@ -563,15 +780,298 @@ test("list, detail and Kanban apply organization and broker scope through RLS", 
     target_opportunity_id: outsiderOpportunityId,
   });
   expect(ownerCrossDetail.error?.code).toBe("42501");
+  const ownerCrossTransition = await transition(
+    outsiderOpportunityId,
+    "in_service",
+    999,
+  );
+  expect(ownerCrossTransition.error?.code).toBe("42501");
+  const brokerStaleTransition = await transition(
+    hiddenLead.opportunity_id,
+    "in_service",
+    999,
+    "",
+    false,
+    broker,
+  );
+  expect(brokerStaleTransition.error?.code).toBe("42501");
   const outsiderOwnList = await outsider.rpc("get_lead_list", {
     target_operation_id: outsiderOperationId,
+    view_scope: "operation",
   });
   expect(
     (outsiderOwnList.data as Array<{ id: string }>).map((lead) => lead.id),
   ).toContain(outsiderOpportunityId);
 });
 
-test("manual merge blocks two active conversations and preserves identity, opt-out, origins and histories", async () => {
+test("my_pipeline stays personal and redacted for dual-role users and requires a coherent active Call assignment", async () => {
+  const contactId = randomUUID();
+  const opportunityId = randomUUID();
+  const callId = randomUUID();
+  await insertFixture("contacts", {
+    display_name: "Identidade protegida no pipeline pessoal",
+    id: contactId,
+    organization_id: organizationId,
+  });
+  await insertFixture("contact_phones", {
+    contact_id: contactId,
+    e164: "+5511666611111",
+    is_primary: true,
+    organization_id: organizationId,
+    original_value: "(11) 66666-1111",
+  });
+  await insertFixture("opportunities", {
+    assigned_membership_id: dualRoleMembershipId,
+    contact_id: contactId,
+    id: opportunityId,
+    operation_id: operationId,
+    organization_id: organizationId,
+    source_type: "meta",
+    stage: "call_scheduled",
+  });
+  await insertFixture("calls", {
+    assigned_membership_id: dualRoleMembershipId,
+    id: callId,
+    operation_id: operationId,
+    opportunity_id: opportunityId,
+    organization_id: organizationId,
+    scheduled_for: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    status: "scheduled",
+  });
+  await insertFixture("call_assignments", {
+    call_id: callId,
+    membership_id: dualRoleMembershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
+
+  const operationView = await dualRole.rpc("get_pipeline_board", {
+    target_operation_id: operationId,
+    view_scope: "operation",
+  });
+  expect(operationView.error).toBeNull();
+  const fullCard = (
+    operationView.data as {
+      cards: Array<Record<string, unknown>>;
+    }
+  ).cards.find((card) => card.id === opportunityId);
+  expect(fullCard).toEqual(
+    expect.objectContaining({
+      display_name: "Identidade protegida no pipeline pessoal",
+      phone_e164: "+5511666611111",
+      redacted: false,
+      view_scope: "operation",
+    }),
+  );
+
+  const personalView = await dualRole.rpc("get_pipeline_board", {
+    target_operation_id: operationId,
+    view_scope: "my_pipeline",
+  });
+  expect(personalView.error).toBeNull();
+  const personalCard = (
+    personalView.data as {
+      cards: Array<Record<string, unknown>>;
+    }
+  ).cards.find((card) => card.id === opportunityId);
+  expect(personalCard).toEqual(
+    expect.objectContaining({
+      contact_id: null,
+      display_name: null,
+      phone_e164: null,
+      redacted: true,
+      source_type: null,
+      view_scope: "my_pipeline",
+    }),
+  );
+
+  const brokerDirectRead = await broker
+    .from("contacts")
+    .select("id")
+    .eq("id", contactId);
+  expect(brokerDirectRead.data).toEqual([]);
+  const brokerDetail = await broker.rpc("get_lead_detail", {
+    target_opportunity_id: opportunityId,
+  });
+  expect(brokerDetail.error?.code).toBe("42501");
+
+  const divergentContactId = randomUUID();
+  const divergentOpportunityId = randomUUID();
+  const divergentCallId = randomUUID();
+  await insertFixture("contacts", {
+    display_name: "Atribuição divergente",
+    id: divergentContactId,
+    organization_id: organizationId,
+  });
+  await insertFixture("opportunities", {
+    assigned_membership_id: dualRoleMembershipId,
+    contact_id: divergentContactId,
+    id: divergentOpportunityId,
+    operation_id: operationId,
+    organization_id: organizationId,
+    stage: "call_scheduled",
+  });
+  await insertFixture("calls", {
+    assigned_membership_id: brokerMembershipId,
+    id: divergentCallId,
+    operation_id: operationId,
+    opportunity_id: divergentOpportunityId,
+    organization_id: organizationId,
+    scheduled_for: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    status: "scheduled",
+  });
+  await insertFixture("call_assignments", {
+    call_id: divergentCallId,
+    membership_id: brokerMembershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
+  const divergentView = await dualRole.rpc("get_pipeline_board", {
+    target_operation_id: operationId,
+    view_scope: "my_pipeline",
+  });
+  expect(
+    (
+      divergentView.data as {
+        cards: Array<{ id: string }>;
+      }
+    ).cards.some((card) => card.id === divergentOpportunityId),
+  ).toBe(false);
+});
+
+test("keeps Contact access and merge authorization isolated between Operations in the same organization", async () => {
+  const visible = await createManualLead({
+    name: "Contato da Operação autorizada",
+    phone: "(11) 95550-1010",
+  });
+  const secondOperationContactId = randomUUID();
+  const secondOperationOpportunityId = randomUUID();
+  await insertFixture("contacts", {
+    display_name: "Contato de outra Operação",
+    id: secondOperationContactId,
+    organization_id: organizationId,
+  });
+  await insertFixture("contact_phones", {
+    contact_id: secondOperationContactId,
+    e164: "+5511955502020",
+    is_primary: true,
+    organization_id: organizationId,
+    original_value: "(11) 95550-2020",
+  });
+  await insertFixture("opportunities", {
+    contact_id: secondOperationContactId,
+    id: secondOperationOpportunityId,
+    operation_id: sameOrganizationSecondOperationId,
+    organization_id: organizationId,
+    stage: "new",
+  });
+
+  const crossOperationContact = await owner
+    .from("contacts")
+    .select("id")
+    .eq("id", secondOperationContactId);
+  expect(crossOperationContact.data).toEqual([]);
+  const crossOperationPhone = await owner
+    .from("contact_phones")
+    .select("id")
+    .eq("contact_id", secondOperationContactId);
+  expect(crossOperationPhone.data).toEqual([]);
+
+  const candidates = await owner.rpc("get_contact_merge_candidates", {
+    excluded_contact_id: visible.contact_id,
+    target_operation_id: operationId,
+  });
+  expect(candidates.error).toBeNull();
+  expect(
+    (candidates.data as Array<{ id: string }>).some(
+      (candidate) => candidate.id === secondOperationContactId,
+    ),
+  ).toBe(false);
+
+  const forbiddenMerge = await owner.rpc("merge_contacts", {
+    duplicate_contact_id: secondOperationContactId,
+    expected_duplicate_version: await contactVersion(
+      secondOperationContactId,
+    ),
+    expected_primary_version: await contactVersion(visible.contact_id),
+    primary_contact_id: visible.contact_id,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+  });
+  expect(forbiddenMerge.error?.code).toBe("42501");
+});
+
+test("keeps observations and source details behind the management detail RPC", async () => {
+  const lead = await createManualLead({
+    name: "Detalhes variáveis protegidos",
+    phone: "(11) 95550-3030",
+    source: "origem protegida",
+  });
+
+  const directObservations = await owner
+    .from("contact_phone_observations")
+    .select("*")
+    .eq("contact_id", lead.contact_id);
+  expect(directObservations.error?.code).toBe("42501");
+  const directSources = await owner
+    .from("source_attributions")
+    .select("*")
+    .eq("opportunity_id", lead.opportunity_id);
+  expect(directSources.error?.code).toBe("42501");
+
+  const detail = await owner.rpc("get_lead_detail", {
+    target_opportunity_id: lead.opportunity_id,
+  });
+  expect(detail.error).toBeNull();
+  expect(detail.data).toEqual(
+    expect.objectContaining({
+      phones: [
+        expect.objectContaining({
+          observations: [
+            expect.objectContaining({
+              original_value: "(11) 95550-3030",
+            }),
+          ],
+        }),
+      ],
+      sources: [
+        expect.objectContaining({ source_type: "origem protegida" }),
+      ],
+    }),
+  );
+});
+
+test("rejects divergent organization, Operation, Contact and Opportunity aggregate references", async () => {
+  const first = await createManualLead({
+    name: "Agregado A",
+    phone: "(11) 95550-4040",
+  });
+  const second = await createManualLead({
+    name: "Agregado B",
+    phone: "(11) 95550-5050",
+  });
+
+  const divergentConversation = await admin.from("conversations").insert({
+    contact_id: first.contact_id,
+    operation_id: operationId,
+    opportunity_id: second.opportunity_id,
+    organization_id: organizationId,
+    ownership_type: "pedro",
+  });
+  expect(divergentConversation.error?.code).toBe("23503");
+
+  const divergentSource = await admin.from("source_attributions").insert({
+    contact_id: first.contact_id,
+    operation_id: sameOrganizationSecondOperationId,
+    opportunity_id: first.opportunity_id,
+    organization_id: organizationId,
+    source_type: "divergente",
+  });
+  expect(divergentSource.error?.code).toBe("23503");
+});
+
+test("manual merge is versioned, reversible and preserves identity, opt-out, origins and histories", async () => {
   const primary = await createManualLead({
     name: "Contato Principal",
     phone: "(11) 94444-3333",
@@ -615,6 +1115,8 @@ test("manual merge blocks two active conversations and preserves identity, opt-o
 
   const blocked = await owner.rpc("merge_contacts", {
     duplicate_contact_id: duplicate.contact_id,
+    expected_duplicate_version: await contactVersion(duplicate.contact_id),
+    expected_primary_version: await contactVersion(primary.contact_id),
     primary_contact_id: primary.contact_id,
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
@@ -633,12 +1135,19 @@ test("manual merge blocks two active conversations and preserves identity, opt-o
 
   const merged = await owner.rpc("merge_contacts", {
     duplicate_contact_id: duplicate.contact_id,
+    expected_duplicate_version: await contactVersion(duplicate.contact_id),
+    expected_primary_version: await contactVersion(primary.contact_id),
     primary_contact_id: primary.contact_id,
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
     target_operation_id: operationId,
   });
   expect(merged.error).toBeNull();
+  const mergeResult = merged.data as {
+    contact_merge_id: string;
+    duplicate_version: number;
+    primary_version: number;
+  };
 
   const mergedContact = await admin
     .from("contacts")
@@ -690,6 +1199,102 @@ test("manual merge blocks two active conversations and preserves identity, opt-o
   expect(
     new Set(histories.data?.map((history) => history.opportunity_id)),
   ).toEqual(new Set([primary.opportunity_id, duplicate.opportunity_id]));
+
+  const staleReversal = await owner.rpc("reverse_contact_merge", {
+    expected_duplicate_version: mergeResult.duplicate_version + 1,
+    expected_primary_version: mergeResult.primary_version,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_contact_merge_id: mergeResult.contact_merge_id,
+  });
+  expect(staleReversal.error?.code).toBe("40001");
+
+  const reversed = await owner.rpc("reverse_contact_merge", {
+    expected_duplicate_version: mergeResult.duplicate_version,
+    expected_primary_version: mergeResult.primary_version,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_contact_merge_id: mergeResult.contact_merge_id,
+  });
+  expect(reversed.error).toBeNull();
+  expect(reversed.data).toEqual(
+    expect.objectContaining({
+      contact_merge_id: mergeResult.contact_merge_id,
+      reversed: true,
+    }),
+  );
+
+  const restoredContact = await admin
+    .from("contacts")
+    .select("merged_into_contact_id, status")
+    .eq("id", duplicate.contact_id)
+    .single();
+  expect(restoredContact.data).toEqual({
+    merged_into_contact_id: null,
+    status: "active",
+  });
+  const restoredPhones = await admin
+    .from("contact_phones")
+    .select("e164")
+    .eq("contact_id", duplicate.contact_id);
+  expect(restoredPhones.data).toEqual([{ e164: duplicate.phone_e164 }]);
+  const restoredOpportunities = await admin
+    .from("opportunities")
+    .select("id")
+    .eq("contact_id", duplicate.contact_id);
+  expect(restoredOpportunities.data).toEqual([
+    { id: duplicate.opportunity_id },
+  ]);
+
+  const secondReversal = await owner.rpc("reverse_contact_merge", {
+    expected_duplicate_version: mergeResult.duplicate_version + 1,
+    expected_primary_version: mergeResult.primary_version + 1,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_contact_merge_id: mergeResult.contact_merge_id,
+  });
+  expect(secondReversal.error?.code).toBe("23514");
+});
+
+test("canonical Contact locks make reciprocal merge races deterministic without deadlock", async () => {
+  const first = await createManualLead({
+    name: "Fusão concorrente A",
+    phone: "(11) 95550-7070",
+  });
+  const second = await createManualLead({
+    name: "Fusão concorrente B",
+    phone: "(11) 95550-8080",
+  });
+  const firstVersion = await contactVersion(first.contact_id);
+  const secondVersion = await contactVersion(second.contact_id);
+
+  const [firstDirection, secondDirection] = await Promise.all([
+    owner.rpc("merge_contacts", {
+      duplicate_contact_id: second.contact_id,
+      expected_duplicate_version: secondVersion,
+      expected_primary_version: firstVersion,
+      primary_contact_id: first.contact_id,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+    }),
+    owner.rpc("merge_contacts", {
+      duplicate_contact_id: first.contact_id,
+      expected_duplicate_version: firstVersion,
+      expected_primary_version: secondVersion,
+      primary_contact_id: second.contact_id,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+    }),
+  ]);
+
+  expect(
+    [firstDirection, secondDirection].filter((result) => result.error === null),
+  ).toHaveLength(1);
+  expect(
+    [firstDirection, secondDirection].filter((result) => result.error !== null),
+  ).toHaveLength(1);
 });
 
 test("reopens pre-call loss automatically, requires a human after call and never reopens Comprado", async () => {
@@ -715,9 +1320,12 @@ test("reopens pre-call loss automatically, requires a human after call and never
     name: "Retorno depois da Call",
     phone: "(11) 91111-0000",
   });
-  expect(
-    (await transition(postCall.opportunity_id, "in_service", 1)).error,
-  ).toBeNull();
+  expect((await transition(
+    postCall.opportunity_id,
+    "lost",
+    1,
+    "Desistiu depois da Call",
+  )).error).toBeNull();
   await admin
     .from("opportunities")
     .update({ assigned_membership_id: brokerMembershipId })
@@ -730,35 +1338,8 @@ test("reopens pre-call loss automatically, requires a human after call and never
     opportunity_id: postCall.opportunity_id,
     organization_id: organizationId,
     scheduled_for: new Date(Date.now() - 3_600_000).toISOString(),
-    status: "scheduled",
+    status: "completed",
   });
-  expect(
-    (await transition(postCall.opportunity_id, "call_scheduled", 2)).error,
-  ).toBeNull();
-  await admin
-    .from("calls")
-    .update({ status: "completed" })
-    .eq("id", postCallId);
-  expect(
-    (
-      await transition(
-        postCall.opportunity_id,
-        "negotiation",
-        3,
-        "Call realizada",
-      )
-    ).error,
-  ).toBeNull();
-  expect(
-    (
-      await transition(
-        postCall.opportunity_id,
-        "lost",
-        4,
-        "Desistiu depois da Call",
-      )
-    ).error,
-  ).toBeNull();
   const postCallReopen = await admin.rpc("reopen_opportunity_on_inbound", {
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
@@ -772,64 +1353,31 @@ test("reopens pre-call loss automatically, requires a human after call and never
     .single();
   expect(stillLost.data?.stage).toBe("lost");
 
-  const purchased = await createManualLead({
-    name: "Venda concluída",
-    phone: "(11) 90000-9999",
-  });
-  expect(
-    (await transition(purchased.opportunity_id, "in_service", 1)).error,
-  ).toBeNull();
-  await admin
-    .from("opportunities")
-    .update({ assigned_membership_id: brokerMembershipId })
-    .eq("id", purchased.opportunity_id);
-  const purchasedCallId = randomUUID();
-  await insertFixture("calls", {
-    assigned_membership_id: brokerMembershipId,
-    id: purchasedCallId,
-    operation_id: operationId,
-    opportunity_id: purchased.opportunity_id,
+  const purchasedContactId = randomUUID();
+  const purchasedOpportunityId = randomUUID();
+  await insertFixture("contacts", {
+    display_name: "Venda concluída",
+    id: purchasedContactId,
     organization_id: organizationId,
-    scheduled_for: new Date().toISOString(),
-    status: "scheduled",
   });
-  const scheduledPurchase = await transition(
-    purchased.opportunity_id,
-    "call_scheduled",
-    await opportunityVersion(purchased.opportunity_id),
-    "Call atribuída",
-  );
-  expect(scheduledPurchase.error).toBeNull();
-  await admin
-    .from("calls")
-    .update({ status: "completed" })
-    .eq("id", purchasedCallId);
-  for (const [stage, reason] of [
-    ["negotiation", "Call realizada"],
-    ["proposal_reservation", "Reserva iniciada"],
-    ["documentation", "Documentação recebida"],
-    ["payment", "Pagamento iniciado"],
-    ["purchased", "Compra confirmada"],
-  ] as const) {
-    const version = await opportunityVersion(purchased.opportunity_id);
-    const result = await transition(
-      purchased.opportunity_id,
-      stage,
-      version,
-      reason,
-    );
-    expect(result.error, stage).toBeNull();
-  }
+  await insertFixture("opportunities", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: purchasedContactId,
+    id: purchasedOpportunityId,
+    operation_id: operationId,
+    organization_id: organizationId,
+    stage: "purchased",
+  });
   const purchasedReopen = await admin.rpc("reopen_opportunity_on_inbound", {
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
-    target_opportunity_id: purchased.opportunity_id,
+    target_opportunity_id: purchasedOpportunityId,
   });
   expect(purchasedReopen.data).toBe("sale_closed");
   const purchasedTransition = await transition(
-    purchased.opportunity_id,
+    purchasedOpportunityId,
     "lost",
-    await opportunityVersion(purchased.opportunity_id),
+    await opportunityVersion(purchasedOpportunityId),
     "Tentativa indevida",
   );
   expect(purchasedTransition.error?.code).toBe("23514");

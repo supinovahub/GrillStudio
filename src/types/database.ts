@@ -800,6 +800,7 @@ export type Database = {
           pedro_context: string | null
           source_type: string
           stage: string
+          stage_entered_at: string
           unit_count: number
           updated_at: string
           version: number
@@ -816,6 +817,7 @@ export type Database = {
           pedro_context?: string | null
           source_type?: string
           stage?: string
+          stage_entered_at?: string
           unit_count?: number
           updated_at?: string
           version?: number
@@ -832,6 +834,7 @@ export type Database = {
           pedro_context?: string | null
           source_type?: string
           stage?: string
+          stage_entered_at?: string
           unit_count?: number
           updated_at?: string
           version?: number
@@ -1381,7 +1384,10 @@ export type Database = {
         Args: { target_opportunity_id: string }
         Returns: Json
       }
-      get_lead_list: { Args: { target_operation_id: string }; Returns: Json }
+      get_lead_list: {
+        Args: { target_operation_id: string; view_scope: string }
+        Returns: Json
+      }
       get_member_deactivation_impact: {
         Args: { target_membership_id: string; target_operation_id: string }
         Returns: {
@@ -1431,7 +1437,7 @@ export type Database = {
         }[]
       }
       get_pipeline_board: {
-        Args: { target_operation_id: string }
+        Args: { target_operation_id: string; view_scope: string }
         Returns: Json
       }
       get_team_management: {
@@ -1441,10 +1447,22 @@ export type Database = {
       merge_contacts: {
         Args: {
           duplicate_contact_id: string
+          expected_duplicate_version: number
+          expected_primary_version: number
           primary_contact_id: string
           request_correlation_id: string
           request_trace_id: string
           target_operation_id: string
+        }
+        Returns: Json
+      }
+      reverse_contact_merge: {
+        Args: {
+          expected_duplicate_version: number
+          expected_primary_version: number
+          request_correlation_id: string
+          request_trace_id: string
+          target_contact_merge_id: string
         }
         Returns: Json
       }

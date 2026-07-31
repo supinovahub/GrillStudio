@@ -151,7 +151,17 @@ export async function transitionOpportunityAction(formData: FormData) {
 
 export async function mergeContactsAction(formData: FormData) {
   const primaryContactId = field(formData, "primary_contact_id");
-  const duplicateContactId = field(formData, "duplicate_contact_id");
+  const duplicateContactRef = field(formData, "duplicate_contact_ref");
+  const [duplicateContactId, duplicateVersionValue] =
+    duplicateContactRef.split(":");
+  const expectedPrimaryVersion = Number.parseInt(
+    field(formData, "expected_primary_version"),
+    10,
+  );
+  const expectedDuplicateVersion = Number.parseInt(
+    duplicateVersionValue || "",
+    10,
+  );
   const operationId = field(formData, "operation_id");
   const opportunityId = field(formData, "opportunity_id");
   const context = await getRequestContext();
@@ -161,7 +171,11 @@ export async function mergeContactsAction(formData: FormData) {
     !primaryContactId ||
     !duplicateContactId ||
     !operationId ||
-    !opportunityId
+    !opportunityId ||
+    !Number.isInteger(expectedPrimaryVersion) ||
+    expectedPrimaryVersion < 1 ||
+    !Number.isInteger(expectedDuplicateVersion) ||
+    expectedDuplicateVersion < 1
   ) {
     redirect(resultPath(returnTo, "fusao-invalida"));
   }
@@ -169,6 +183,8 @@ export async function mergeContactsAction(formData: FormData) {
   const supabase = await createClient();
   const { error } = await supabase.rpc("merge_contacts", {
     duplicate_contact_id: duplicateContactId,
+    expected_duplicate_version: expectedDuplicateVersion,
+    expected_primary_version: expectedPrimaryVersion,
     primary_contact_id: primaryContactId,
     request_correlation_id: context.correlationId,
     request_trace_id: context.traceId,

@@ -20,8 +20,14 @@ export default async function MyPipelinePage() {
   if (!workspace) {
     redirect("/aguardando-aprovacao");
   }
+  if (!workspace.member_roles.includes("broker")) {
+    redirect("/sem-permissao");
+  }
 
-  const board = await getPipelineBoard(workspace.operation_id);
+  const board = await getPipelineBoard(
+    workspace.operation_id,
+    "my_pipeline",
+  );
 
   return (
     <AppShell

@@ -45,10 +45,13 @@ export default async function LeadsPage({
     redirect("/aguardando-aprovacao");
   }
 
-  const leads = await getLeadList(workspace.operation_id);
   const canCreate = workspace.member_roles.some((role) =>
     ["owner", "manager"].includes(role),
   );
+  if (!canCreate) {
+    redirect("/sem-permissao");
+  }
+  const leads = await getLeadList(workspace.operation_id);
   const statusMessage = params.resultado
     ? statusMessages[params.resultado]
     : null;

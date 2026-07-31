@@ -12,6 +12,7 @@ export async function getLeadList(
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("get_lead_list", {
     target_operation_id: operationId,
+    view_scope: "operation",
   });
 
   if (error || !data) {
@@ -23,10 +24,12 @@ export async function getLeadList(
 
 export async function getPipelineBoard(
   operationId: string,
+  viewScope: "my_pipeline" | "operation" = "operation",
 ): Promise<PipelineBoard> {
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("get_pipeline_board", {
     target_operation_id: operationId,
+    view_scope: viewScope,
   });
 
   if (error || !data) {

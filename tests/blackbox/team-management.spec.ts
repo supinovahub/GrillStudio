@@ -538,6 +538,10 @@ test("deactivation revokes sessions, stops Offers and returns human work without
   const contactId = randomUUID();
   const callId = randomUUID();
   const assignmentId = randomUUID();
+  const scheduledOpportunityId = randomUUID();
+  const scheduledContactId = randomUUID();
+  const scheduledCallId = randomUUID();
+  const scheduledAssignmentId = randomUUID();
   await insertFixture("contacts", {
     display_name: "Contato de Desativação Sintético",
     id: contactId,
@@ -574,6 +578,35 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     recipient_membership_id: brokerMembershipId,
     status: "pending",
   });
+  await insertFixture("contacts", {
+    display_name: "Contato com Call a redistribuir",
+    id: scheduledContactId,
+    organization_id: organizationId,
+  });
+  await insertFixture("opportunities", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: scheduledContactId,
+    id: scheduledOpportunityId,
+    operation_id: operationId,
+    organization_id: organizationId,
+    stage: "call_scheduled",
+  });
+  await insertFixture("calls", {
+    assigned_membership_id: brokerMembershipId,
+    id: scheduledCallId,
+    operation_id: operationId,
+    opportunity_id: scheduledOpportunityId,
+    organization_id: organizationId,
+    scheduled_for: new Date(Date.now() + 40 * 60 * 1000).toISOString(),
+    status: "scheduled",
+  });
+  await insertFixture("call_assignments", {
+    call_id: scheduledCallId,
+    id: scheduledAssignmentId,
+    membership_id: brokerMembershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
 
   const url = requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL");
   const key = requiredEnvironment("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
@@ -600,8 +633,8 @@ test("deactivation revokes sessions, stops Offers and returns human work without
   });
   expect(impact.data).toEqual([
     {
-      calls_within_one_hour: 1,
-      future_calls: 1,
+      calls_within_one_hour: 2,
+      future_calls: 2,
       post_call_opportunities: 1,
     },
   ]);
@@ -619,8 +652,8 @@ test("deactivation revokes sessions, stops Offers and returns human work without
   expect(deactivation.error).toBeNull();
   expect(deactivation.data).toEqual([
     expect.objectContaining({
-      calls_within_one_hour: 1,
-      future_calls: 1,
+      calls_within_one_hour: 2,
+      future_calls: 2,
       post_call_opportunities: 1,
     }),
   ]);
@@ -643,6 +676,39 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     assigned_membership_id: null,
     status: "distributing",
   });
+  const redistributedCall = await admin
+    .from("calls")
+    .select("assigned_membership_id, status")
+    .eq("id", scheduledCallId)
+    .single();
+  expect(redistributedCall.data).toEqual({
+    assigned_membership_id: null,
+    status: "distributing",
+  });
+  const returnedOpportunity = await admin
+    .from("opportunities")
+    .select("assigned_membership_id, stage")
+    .eq("id", scheduledOpportunityId)
+    .single();
+  expect(returnedOpportunity.data).toEqual({
+    assigned_membership_id: null,
+    stage: "in_service",
+  });
+  const returnedHistory = await database<
+    { actor_user_id: string; from_stage: string; reason: string; to_stage: string }[]
+  >`select actor_user_id, from_stage, reason, to_stage
+    from public.opportunity_stage_history
+    where opportunity_id = ${scheduledOpportunityId}
+    order by created_at desc
+    limit 1`;
+  expect(returnedHistory).toEqual([
+    {
+      actor_user_id: ownerId,
+      from_stage: "call_scheduled",
+      reason: "call_redistributed_member_deactivated",
+      to_stage: "in_service",
+    },
+  ]);
   const opportunity = await admin
     .from("opportunities")
     .select("assigned_membership_id")
@@ -708,6 +774,18 @@ test("deactivation revokes sessions, stops Offers and returns human work without
       after_state: expect.objectContaining({ reauthenticated: true }),
     }),
   );
+  const redistributionAudit = await database<
+    { action: string; after_state: { random_reassignment: boolean } }[]
+  >`select action, after_state
+    from audit.audit_events
+    where target_id = ${scheduledOpportunityId}
+      and action = 'opportunity.returned_to_service_on_member_deactivation'`;
+  expect(redistributionAudit).toEqual([
+    {
+      action: "opportunity.returned_to_service_on_member_deactivation",
+      after_state: expect.objectContaining({ random_reassignment: false }),
+    },
+  ]);
 });
 
 test("Dono creates an individual invitation with a predefined Corretor role", async ({

@@ -17,21 +17,26 @@ export const pipelineStageLabels = Object.fromEntries(
 ) as Record<PipelineStage, string>;
 
 export type LeadSummary = {
-  amount_scope: "per_unit" | "total";
+  allowed_actions: PipelineStage[];
+  amount_scope: "per_unit" | "total" | null;
   assigned_membership_id: string | null;
   assigned_name: string | null;
-  contact_id: string;
+  contact_id: string | null;
   created_at: string;
   display_name: string | null;
-  has_opt_out: boolean;
+  has_opt_out: boolean | null;
   id: string;
-  phone_e164: string;
-  phone_original: string;
-  source_type: string;
+  phone_e164: string | null;
+  phone_original: string | null;
+  redacted: boolean;
+  scheduled_for: string | null;
+  source_type: string | null;
   stage: PipelineStage;
-  unit_count: number;
+  stage_entered_at: string;
+  unit_count: number | null;
   updated_at: string;
   version: number;
+  view_scope: "my_pipeline" | "operation";
 };
 
 export type PipelineBoard = {
@@ -55,12 +60,15 @@ export type LeadPhone = {
 };
 
 export type LeadDetail = {
+  allowed_actions: PipelineStage[];
   amount_scope: "per_unit" | "total";
   assigned_membership_id: string | null;
   assigned_name: string | null;
   contact_id: string;
   contact_status: "active" | "merged";
+  contact_version: number;
   conversations: Array<{
+    assigned_membership_id: string | null;
     id: string;
     opened_at: string;
     ownership_type: "human" | "pedro";
@@ -103,6 +111,7 @@ export type LeadDetail = {
     source_type: string;
   }>;
   stage: PipelineStage;
+  stage_entered_at: string;
   unit_count: number;
   updated_at: string;
   version: number;
@@ -114,6 +123,7 @@ export type ContactMergeCandidate = {
   id: string;
   phone_e164: string | null;
   phone_original: string | null;
+  version: number;
 };
 
 export function isPipelineStage(value: string): value is PipelineStage {

@@ -14,7 +14,6 @@ import {
 } from "@/lib/leads/queries";
 import {
   pipelineStageLabels,
-  pipelineStages,
 } from "@/lib/leads/types";
 import { getMemberWorkspace } from "@/lib/operation/shell";
 
@@ -285,9 +284,10 @@ export default async function LeadDetailPage({
                 <h2 id="transition-title">Alterar Etapa</h2>
               </div>
             </div>
-            {detail.stage === "purchased" ? (
+            {detail.allowed_actions.length === 0 ? (
               <p className="empty-copy">
-                Comprado é um desfecho final e não pode ser reaberto.
+                Esta Etapa só pode mudar pelo fluxo protegido do domínio
+                responsável.
               </p>
             ) : (
               <form
@@ -320,11 +320,9 @@ export default async function LeadDetailPage({
                     <option disabled value="">
                       Selecione
                     </option>
-                    {pipelineStages
-                      .filter((stage) => stage.key !== detail.stage)
-                      .map((stage) => (
-                        <option key={stage.key} value={stage.key}>
-                          {stage.label}
+                    {detail.allowed_actions.map((stage) => (
+                        <option key={stage} value={stage}>
+                          {pipelineStageLabels[stage]}
                         </option>
                       ))}
                   </select>
@@ -382,6 +380,11 @@ export default async function LeadDetailPage({
                     value={detail.contact_id}
                   />
                   <input
+                    name="expected_primary_version"
+                    type="hidden"
+                    value={detail.contact_version}
+                  />
+                  <input
                     name="operation_id"
                     type="hidden"
                     value={workspace.operation_id}
@@ -398,14 +401,17 @@ export default async function LeadDetailPage({
                     <select
                       defaultValue=""
                       id="duplicate-contact"
-                      name="duplicate_contact_id"
+                      name="duplicate_contact_ref"
                       required
                     >
                       <option disabled value="">
                         Selecione pelo nome e telefone
                       </option>
                       {mergeCandidates.map((candidate) => (
-                        <option key={candidate.id} value={candidate.id}>
+                        <option
+                          key={candidate.id}
+                          value={`${candidate.id}:${candidate.version}`}
+                        >
                           {candidate.display_name || "Nome não informado"} ·{" "}
                           {candidate.phone_e164 || "sem telefone"}
                           {candidate.active_conversations > 0
