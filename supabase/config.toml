@@ -34,3 +34,6 @@ inactivity_timeout = "720h"
 [auth.email]
 enable_signup = true
 enable_confirmations = true
+
+[functions.durable-worker]
+verify_jwt = true
