@@ -3085,8 +3085,6 @@ begin
   end if;
 
   return case
-    when state_record.manual_proactive_paused
-      then 'operation_manual_pause'
     when conversation_record.status <> 'active'
       then 'conversation_inactive'
     when conversation_record.ownership_type <> 'pedro'
@@ -3901,8 +3899,7 @@ begin
     return jsonb_build_object('status', 'duplicate');
   end if;
 
-  if state_record.manual_proactive_paused
-    or conversation_record.status <> 'active'
+  if conversation_record.status <> 'active'
     or conversation_record.ownership_type <> 'pedro'
     or conversation_record.is_paused
     or conversation_record.capacity_state <> 'active'

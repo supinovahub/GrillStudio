@@ -175,14 +175,13 @@ async function forceResponseBatchReady(batchId: string) {
   `;
 }
 
-type AutomationGate = "capacity" | "handoff" | "manual_pause" | "optout";
+type AutomationGate = "capacity" | "handoff" | "optout";
 
 const automationGates: Array<{
   expectedReason: string;
   gate: AutomationGate;
 }> = [
   { expectedReason: "human_owned", gate: "handoff" },
-  { expectedReason: "operation_manual_pause", gate: "manual_pause" },
   { expectedReason: "active_opt_out", gate: "optout" },
   { expectedReason: "capacity_not_active", gate: "capacity" },
 ];
@@ -204,15 +203,6 @@ async function closeAutomationGate(
       target_conversation_id: conversationId,
     });
     expect(assumed.error).toBeNull();
-  } else if (gate === "manual_pause") {
-    await database`
-      update private.operation_capacity_state
-      set
-        manual_proactive_paused = true,
-        manual_pause_reason = 'teste de fence pós-lease',
-        updated_at = now()
-      where operation_id = ${operationId}::uuid
-    `;
   } else if (gate === "optout") {
     await database`
       insert into public.opt_outs (
@@ -239,18 +229,6 @@ async function closeAutomationGate(
       `;
     });
   }
-}
-
-async function reopenManualAutomationGate(gate: AutomationGate) {
-  if (gate !== "manual_pause") return;
-  await database`
-    update private.operation_capacity_state
-    set
-      manual_proactive_paused = false,
-      manual_pause_reason = null,
-      updated_at = now()
-    where operation_id = ${operationId}::uuid
-  `;
 }
 
 test.describe.configure({ mode: "serial", timeout: 60_000 });
@@ -853,6 +831,145 @@ test("lease expirado é recuperado e completion stale nunca vence", async () => 
   expect(denied.error).not.toBeNull();
 });
 
+test("pausa manual bloqueia só proativo e preserva inbound já admitido", async () => {
+  const conversationId = await createAdmittedConversation();
+  await insertProviderMessage(conversationId, {
+    body: "inbound admitido antes da pausa proativa",
+  });
+  const batchId = await responseBatchId(conversationId);
+  await forceResponseBatchReady(batchId);
+  const workerId = randomUUID();
+  const claimed = await database<
+    Array<{
+      result: {
+        effect_key: string;
+        input_hash: string;
+        lease_token: string;
+      };
+    }>
+  >`
+    select private.claim_ready_response_batch(
+      ${operationId}::uuid,
+      ${batchId}::uuid,
+      ${`t07:test-manual-pause-inbound:${batchId}`},
+      ${workerId}::uuid,
+      30,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  const lease = claimed[0]!.result;
+  const proactiveConversationId = await createConversation();
+  const proactiveObservedAt = "2026-07-31T14:00:00Z";
+  const preconditions = await database<
+    Array<{
+      active_count: number;
+      automatic_proactive_paused: boolean;
+      proactive_open: boolean;
+    }>
+  >`
+    select
+      state.automatic_proactive_paused,
+      private.is_operation_proactive_open(
+        ${operationId}::uuid,
+        ${proactiveObservedAt}::timestamptz
+      ) as proactive_open,
+      (
+        select count(*)::integer
+        from private.conversation_capacity_slots
+        where operation_id = ${operationId}::uuid
+      ) as active_count
+    from private.operation_capacity_state as state
+    where state.operation_id = ${operationId}::uuid
+  `;
+  expect(preconditions[0]!.active_count).toBeLessThan(10);
+  expect(preconditions[0]!.automatic_proactive_paused).toBe(false);
+  expect(preconditions[0]!.proactive_open).toBe(true);
+
+  const paused = await owner.rpc("set_operation_proactive_pause", {
+    paused: true,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_operation_id: operationId,
+    target_reason: "regressão: pausa exclusiva de proativas",
+  });
+  expect(paused.error).toBeNull();
+
+  try {
+    const completed = await database<
+      Array<{ result: { status: string } }>
+    >`
+      select private.complete_response_batch(
+        ${operationId}::uuid,
+        ${batchId}::uuid,
+        ${lease.effect_key},
+        ${workerId}::uuid,
+        ${lease.lease_token}::uuid,
+        ${lease.input_hash},
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as result
+    `;
+    expect(completed[0]!.result.status).toBe("completed");
+
+    const consumed = await database<
+      Array<{ result: { status: string } }>
+    >`
+      select private.consume_response_batch(
+        ${operationId}::uuid,
+        ${batchId}::uuid,
+        ${lease.effect_key},
+        ${workerId}::uuid,
+        ${lease.lease_token}::uuid
+      ) as result
+    `;
+    expect(consumed[0]!.result.status).toBe("consumed");
+
+    const outbound = await database<
+      Array<{ result: { status: string } }>
+    >`
+      select private.record_pedro_outbound_sent(
+        ${operationId}::uuid,
+        ${conversationId}::uuid,
+        ${`t07:test-manual-pause-outbound:${conversationId}`},
+        now(),
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as result
+    `;
+    expect(outbound[0]!.result.status).toBe("recorded");
+
+    const proactive = await database<
+      Array<{ result: { outcome: string } }>
+    >`
+      select private.apply_operation_capacity_command(
+        ${operationId}::uuid,
+        ${proactiveConversationId}::uuid,
+        'admit_proactive',
+        'campaign',
+        'campaign',
+        null,
+        ${proactiveObservedAt}::timestamptz,
+        ${`t07:test-manual-pause-proactive:${proactiveConversationId}`},
+        null,
+        null,
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as result
+    `;
+    expect(proactive[0]!.result.outcome).toBe("waiting");
+  } finally {
+    const resumed = await owner.rpc("set_operation_proactive_pause", {
+      paused: false,
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_operation_id: operationId,
+      target_reason: null,
+    });
+    expect(resumed.error).toBeNull();
+  }
+});
+
 test("claim cancela batch após handoff, pausa ou opt-out", async () => {
   const cases = [
     { expectedReason: "human_owned", gate: "handoff" },
@@ -1076,78 +1193,70 @@ test("gates são revalidados no complete, consume e registro outbound", async ()
         `;
       }
 
-      try {
-        await closeAutomationGate(conversationId, scenario.gate);
-        const fenced =
-          phase === "complete"
-            ? await database<
-                Array<{ result: { reason: string; status: string } }>
-              >`
-                select private.complete_response_batch(
-                  ${operationId}::uuid,
-                  ${batchId}::uuid,
-                  ${lease.effect_key},
-                  ${workerId}::uuid,
-                  ${lease.lease_token}::uuid,
-                  ${lease.input_hash},
-                  ${randomUUID()}::uuid,
-                  ${randomUUID()}::uuid
-                ) as result
-              `
-            : await database<
-                Array<{ result: { reason: string; status: string } }>
-              >`
-                select private.consume_response_batch(
-                  ${operationId}::uuid,
-                  ${batchId}::uuid,
-                  ${lease.effect_key},
-                  ${workerId}::uuid,
-                  ${lease.lease_token}::uuid
-                ) as result
-              `;
-        expect(fenced[0]!.result).toMatchObject({
-          reason: scenario.expectedReason,
-          status: "cancelled",
-        });
-        const batch = await database<Array<{ status: string }>>`
-          select status
-          from private.pedro_response_batches
-          where id = ${batchId}::uuid
-        `;
-        expect(batch[0]!.status).toBe("cancelled");
-      } finally {
-        await reopenManualAutomationGate(scenario.gate);
-      }
+      await closeAutomationGate(conversationId, scenario.gate);
+      const fenced =
+        phase === "complete"
+          ? await database<
+              Array<{ result: { reason: string; status: string } }>
+            >`
+              select private.complete_response_batch(
+                ${operationId}::uuid,
+                ${batchId}::uuid,
+                ${lease.effect_key},
+                ${workerId}::uuid,
+                ${lease.lease_token}::uuid,
+                ${lease.input_hash},
+                ${randomUUID()}::uuid,
+                ${randomUUID()}::uuid
+              ) as result
+            `
+          : await database<
+              Array<{ result: { reason: string; status: string } }>
+            >`
+              select private.consume_response_batch(
+                ${operationId}::uuid,
+                ${batchId}::uuid,
+                ${lease.effect_key},
+                ${workerId}::uuid,
+                ${lease.lease_token}::uuid
+              ) as result
+            `;
+      expect(fenced[0]!.result).toMatchObject({
+        reason: scenario.expectedReason,
+        status: "cancelled",
+      });
+      const batch = await database<Array<{ status: string }>>`
+        select status
+        from private.pedro_response_batches
+        where id = ${batchId}::uuid
+      `;
+      expect(batch[0]!.status).toBe("cancelled");
     }
   }
 
   for (const scenario of automationGates) {
     const conversationId = await createAdmittedConversation();
     const effectKey = `t07:test-outbound:${scenario.gate}:${conversationId}`;
-    try {
-      await closeAutomationGate(conversationId, scenario.gate);
-      await expect(
-        database`
-          select private.record_pedro_outbound_sent(
-            ${operationId}::uuid,
-            ${conversationId}::uuid,
-            ${effectKey},
-            now(),
-            ${randomUUID()}::uuid,
-            ${randomUUID()}::uuid
-          )
-        `,
-      ).rejects.toMatchObject({ code: "55000" });
-      const effects = await database<Array<{ count: number }>>`
-        select count(*)::integer as count
-        from private.pedro_outbound_effects
-        where operation_id = ${operationId}::uuid
-          and effect_key = ${effectKey}
-      `;
-      expect(effects[0]!.count).toBe(0);
-    } finally {
-      await reopenManualAutomationGate(scenario.gate);
-    }
+    await closeAutomationGate(conversationId, scenario.gate);
+    await expect(
+      database`
+        select private.record_pedro_outbound_sent(
+          ${operationId}::uuid,
+          ${conversationId}::uuid,
+          ${effectKey},
+          now(),
+          ${randomUUID()}::uuid,
+          ${randomUUID()}::uuid
+        )
+      `,
+    ).rejects.toMatchObject({ code: "55000" });
+    const effects = await database<Array<{ count: number }>>`
+      select count(*)::integer as count
+      from private.pedro_outbound_effects
+      where operation_id = ${operationId}::uuid
+        and effect_key = ${effectKey}
+    `;
+    expect(effects[0]!.count).toBe(0);
   }
 });
 
