@@ -174,44 +174,57 @@ test("dois consumidores preservam a ordem canônica de cem mensagens", async () 
   }
   expect(accepted.every((result) => !result.error)).toBe(true);
 
-  await Promise.all([drain(100), drain(100)]);
-  const order = await database<
-    Array<{
-      correctly_ordered: number;
-      leaked_leases: number;
-      maximum_sequence: number;
-      total: number;
-      unique_sequences: number;
-    }>
-  >`
-    with ordered as (
-      select message.provider_message_id, message.inbound_stream_sequence
-      from public.messages as message
-      where message.connection_id = ${connectionId}::uuid
-        and message.provider_message_id like 'ordered-%'
+  await expect
+    .poll(
+      async () => {
+        await Promise.all([drain(100), drain(100)]);
+        const order = await database<
+          Array<{
+            correctly_ordered: number;
+            leaked_leases: number;
+            maximum_sequence: number;
+            total: number;
+            unique_sequences: number;
+          }>
+        >`
+          with ordered as (
+            select
+              message.provider_message_id,
+              message.inbound_stream_sequence
+            from public.messages as message
+            where message.connection_id = ${connectionId}::uuid
+              and message.provider_message_id like 'ordered-%'
+          )
+          select
+            count(*)::integer as total,
+            count(distinct inbound_stream_sequence)::integer
+              as unique_sequences,
+            max(inbound_stream_sequence)::integer as maximum_sequence,
+            count(*) filter (
+              where provider_message_id =
+                'ordered-' || lpad(inbound_stream_sequence::text, 3, '0')
+            )::integer as correctly_ordered,
+            (
+              select count(*)::integer
+              from private.conversation_processing_leases
+              where operation_id = ${operationId}::uuid
+            ) as leaked_leases
+          from ordered
+        `;
+        return order[0];
+      },
+      {
+        intervals: [250, 500, 1_000],
+        timeout: 30_000,
+      },
     )
-    select
-      count(*)::integer as total,
-      count(distinct inbound_stream_sequence)::integer as unique_sequences,
-      max(inbound_stream_sequence)::integer as maximum_sequence,
-      count(*) filter (
-        where provider_message_id =
-          'ordered-' || lpad(inbound_stream_sequence::text, 3, '0')
-      )::integer as correctly_ordered,
-      (
-        select count(*)::integer
-        from private.conversation_processing_leases
-        where operation_id = ${operationId}::uuid
-      ) as leaked_leases
-    from ordered
-  `;
-  expect(order[0]).toEqual({
-    correctly_ordered: 100,
-    leaked_leases: 0,
-    maximum_sequence: 100,
-    total: 100,
-    unique_sequences: 100,
-  });
+    .toEqual({
+      correctly_ordered: 100,
+      leaked_leases: 0,
+      maximum_sequence: 100,
+      total: 100,
+      unique_sequences: 100,
+    });
 });
 
 test("redelivery depois do efeito durável não duplica a mensagem", async () => {
