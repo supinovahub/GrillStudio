@@ -246,18 +246,19 @@ test("redelivery depois do efeito durável não duplica a mensagem", async () =>
       and provider_event_id = 'duplicate-001'
   `;
   const inbox = rows[0]!;
+  const envelope = {
+    correlation_id: inbox.correlation_id,
+    inbox_id: inbox.id,
+    operation_id: operationId,
+    organization_id: inbox.organization_id,
+    stream_key: inbox.stream_key,
+    stream_sequence: inbox.stream_sequence,
+    trace_id: inbox.trace_id,
+  };
   await database`
     select pgmq.send(
       'inbound_whatsapp',
-      jsonb_build_object(
-        'inbox_id', ${inbox.id}::uuid,
-        'organization_id', ${inbox.organization_id}::uuid,
-        'operation_id', ${operationId}::uuid,
-        'stream_key', ${inbox.stream_key},
-        'stream_sequence', ${inbox.stream_sequence},
-        'trace_id', ${inbox.trace_id}::uuid,
-        'correlation_id', ${inbox.correlation_id}::uuid
-      )
+      ${database.json(envelope)}::jsonb
     )
   `;
   await drain();
