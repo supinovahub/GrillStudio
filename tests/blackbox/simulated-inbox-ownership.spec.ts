@@ -734,20 +734,32 @@ test("origem é imutável e uma segunda conexão não repina a primeira", async 
   `.catch((error: unknown) => error);
   expect(mutation).toBeInstanceOf(Error);
 
+  const secondConnectionEvent = inbound(
+    "message-second-connection",
+    "chat-primary",
+    "lead-primary",
+  );
   const result = await admin.rpc("ingest_simulated_inbound", {
-    normalized_event: inbound(
-      "message-second-connection",
-      "chat-primary",
-      "lead-primary",
-    ),
+    normalized_event: secondConnectionEvent,
+    raw_body: JSON.stringify(secondConnectionEvent),
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
     target_connection_id: secondConnectionId,
   });
   expect(result.error).toBeNull();
-  const secondConversationId = (
-    result.data as { conversation_id: string }
-  ).conversation_id;
+  expect((result.data as { status: string }).status).toBe("accepted");
+  const secondWorker = await admin.rpc("run_durable_workers", {
+    maximum_messages: 25,
+  });
+  expect(secondWorker.error).toBeNull();
+  const secondConversation = await database<Array<{ id: string }>>`
+    select id
+    from public.conversations
+    where connection_id = ${secondConnectionId}::uuid
+      and provider_chat_id = 'chat-primary'
+      and status in ('active', 'sleeping')
+  `;
+  const secondConversationId = secondConversation[0]!.id;
   expect(secondConversationId).not.toBe(conversationId);
 
   const origins = await database<
@@ -769,25 +781,29 @@ test("origem é imutável e uma segunda conexão não repina a primeira", async 
   );
 
   const sharedPhone = "+55 11 98765-4321";
+  const primaryPhoneEvent = inbound(
+    "message-phone-race-primary",
+    "chat-phone-race-primary",
+    "lead-phone-race-primary",
+    sharedPhone,
+  );
+  const secondaryPhoneEvent = inbound(
+    "message-phone-race-secondary",
+    "chat-phone-race-secondary",
+    "lead-phone-race-secondary",
+    sharedPhone,
+  );
   const concurrentIdentity = await Promise.all([
     admin.rpc("ingest_simulated_inbound", {
-      normalized_event: inbound(
-        "message-phone-race-primary",
-        "chat-phone-race-primary",
-        "lead-phone-race-primary",
-        sharedPhone,
-      ),
+      normalized_event: primaryPhoneEvent,
+      raw_body: JSON.stringify(primaryPhoneEvent),
       request_correlation_id: randomUUID(),
       request_trace_id: randomUUID(),
       target_connection_id: connectionId,
     }),
     admin.rpc("ingest_simulated_inbound", {
-      normalized_event: inbound(
-        "message-phone-race-secondary",
-        "chat-phone-race-secondary",
-        "lead-phone-race-secondary",
-        sharedPhone,
-      ),
+      normalized_event: secondaryPhoneEvent,
+      raw_body: JSON.stringify(secondaryPhoneEvent),
       request_correlation_id: randomUUID(),
       request_trace_id: randomUUID(),
       target_connection_id: secondConnectionId,
@@ -796,7 +812,11 @@ test("origem é imutável e uma segunda conexão não repina a primeira", async 
   expect(concurrentIdentity.every((item) => item.error === null)).toBe(true);
   expect(
     concurrentIdentity.map((item) => (item.data as { status: string }).status),
-  ).toEqual(["received", "received"]);
+  ).toEqual(["accepted", "accepted"]);
+  const identityWorker = await admin.rpc("run_durable_workers", {
+    maximum_messages: 25,
+  });
+  expect(identityWorker.error).toBeNull();
 
   const canonicalIdentity = await database<
     Array<{ contacts: number; identities: number; phones: number }>
@@ -1260,6 +1280,174 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
   `;
   expect(storedBoundary[0]!.body).toBe(exactBoundary);
 
+  await database`
+    update public.conversations
+    set version = version + 1, updated_at = now()
+    where id = ${conversationId}::uuid
+  `;
+  const staleWorker = await admin.rpc("run_durable_workers", {
+    maximum_messages: 25,
+  });
+  expect(staleWorker.error).toBeNull();
+  const suppressed = await database<
+    Array<{
+      audit_status: string;
+      captures: number;
+      effect_state: string;
+      message_status: string;
+      outbox_status: string;
+    }>
+  >`
+    select
+      message.status as message_status,
+      event.status as outbox_status,
+      effect.state as effect_state,
+      audit.after_state ->> 'status' as audit_status,
+      (
+        select count(*)::integer
+        from private.simulator_outbound_captures as capture
+        where capture.message_id = message.id
+      ) as captures
+    from public.messages as message
+    join private.outbox_events as event
+      on event.payload ->> 'message_id' = message.id::text
+    join private.effect_ledger as effect
+      on effect.organization_id = event.organization_id
+      and effect.operation_id = event.operation_id
+      and effect.effect_key = event.idempotency_key
+    join audit.audit_events as audit
+      on audit.target_id = message.id
+      and audit.action = 'message.outbound_suppressed'
+    where message.conversation_id = ${conversationId}::uuid
+      and message.idempotency_key = ${secondCommand}::uuid
+  `;
+  expect(suppressed[0]).toEqual({
+    audit_status: "suppressed",
+    captures: 0,
+    effect_state: "suppressed",
+    message_status: "suppressed",
+    outbox_status: "completed",
+  });
+
+  const replayCommand = randomUUID();
+  const replayQueued = await owner.rpc("send_human_message", {
+    command_id: replayCommand,
+    expected_version: await version(conversationId),
+    message_text: "Comando sintético para replay",
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_conversation_id: conversationId,
+  });
+  expect(replayQueued.error).toBeNull();
+  const replayFixture = await database.begin(async (sql) => {
+    await sql`select private.dispatch_outbox_events(25)`;
+    const events = await sql<
+      Array<{
+        aggregate_id: string;
+        aggregate_sequence: number;
+        aggregate_type: string;
+        aggregate_version: number;
+        correlation_id: string;
+        effect_key: string;
+        id: string;
+        operation_id: string;
+        organization_id: string;
+        queue_message_id: number;
+        trace_id: string;
+      }>
+    >`
+      select
+        event.id,
+        event.organization_id,
+        event.operation_id,
+        event.aggregate_type,
+        event.aggregate_id,
+        event.aggregate_version,
+        event.aggregate_sequence,
+        event.idempotency_key as effect_key,
+        event.queue_message_id,
+        event.trace_id,
+        event.correlation_id
+      from private.outbox_events as event
+      join public.messages as message
+        on message.id::text = event.payload ->> 'message_id'
+      where message.idempotency_key = ${replayCommand}::uuid
+      for update of event
+    `;
+    const event = events[0]!;
+    const letters = await sql<Array<{ dead_letter_id: string }>>`
+      select private.dead_letter_queue_message(
+        'outbound_whatsapp',
+        ${event.queue_message_id},
+        ${event.id}::uuid,
+        ${event.effect_key},
+        jsonb_build_object(
+          'outbox_event_id', ${event.id}::uuid,
+          'organization_id', ${event.organization_id}::uuid,
+          'operation_id', ${event.operation_id}::uuid,
+          'aggregate_type', ${event.aggregate_type},
+          'aggregate_id', ${event.aggregate_id}::uuid,
+          'aggregate_version', ${event.aggregate_version},
+          'aggregate_sequence', ${event.aggregate_sequence},
+          'effect_key', ${event.effect_key},
+          'trace_id', ${event.trace_id}::uuid,
+          'correlation_id', ${event.correlation_id}::uuid
+        ),
+        1,
+        'non_retryable',
+        'synthetic_replay_fixture',
+        ${event.organization_id}::uuid,
+        ${event.operation_id}::uuid,
+        ${event.trace_id}::uuid,
+        ${event.correlation_id}::uuid
+      ) as dead_letter_id
+    `;
+    await sql`
+      update private.outbox_events
+      set
+        status = 'dead',
+        attempts = 1,
+        last_error_class = 'non_retryable',
+        last_error_code = 'synthetic_replay_fixture',
+        updated_at = now()
+      where id = ${event.id}::uuid
+    `;
+    return {
+      deadLetterId: letters[0]!.dead_letter_id,
+      eventId: event.id,
+    };
+  });
+  const replayed = await owner.rpc("replay_dead_letter", {
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_dead_letter_id: replayFixture.deadLetterId,
+  });
+  expect(replayed.error).toBeNull();
+  expect(replayed.data).toEqual(expect.objectContaining({ status: "replayed" }));
+  const replayState = await database<
+    Array<{ alert_status: string; attempts: number; event_status: string }>
+  >`
+    select
+      event.status as event_status,
+      event.attempts,
+      alert.status as alert_status
+    from private.outbox_events as event
+    join private.dead_letters as letter
+      on letter.envelope_id = event.id
+    join private.durable_processing_alerts as alert
+      on alert.dead_letter_id = letter.id
+    where event.id = ${replayFixture.eventId}::uuid
+  `;
+  expect(replayState[0]).toEqual({
+    alert_status: "resolved",
+    attempts: 0,
+    event_status: "published",
+  });
+  const replayWorker = await admin.rpc("run_durable_workers", {
+    maximum_messages: 25,
+  });
+  expect(replayWorker.error).toBeNull();
+
   const tooLong = await owner.rpc("send_human_message", {
     command_id: randomUUID(),
     expected_version: await version(conversationId),
@@ -1269,6 +1457,151 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
     target_conversation_id: conversationId,
   });
   expect(tooLong.error?.code).toBe("22001");
+});
+
+test("replay inbound antigo é reconciliado quando a sequência já avançou", async () => {
+  const replayChat = `chat-stale-replay-${suffix}`;
+  const firstMessageId = `message-stale-replay-1-${suffix}`;
+  const secondMessageId = `message-stale-replay-2-${suffix}`;
+  const first = await ingest(
+    firstMessageId,
+    replayChat,
+    `lead-stale-replay-${suffix}`,
+  );
+  expect(first.error).toBeNull();
+  const second = await ingest(
+    secondMessageId,
+    replayChat,
+    `lead-stale-replay-${suffix}`,
+  );
+  expect(second.error).toBeNull();
+
+  const fixture = await database.begin(async (sql) => {
+    const inboxes = await sql<
+      Array<{
+        correlation_id: string;
+        id: string;
+        organization_id: string;
+        stream_key: string;
+        stream_sequence: number;
+        trace_id: string;
+      }>
+    >`
+      select
+        id,
+        organization_id,
+        stream_key,
+        stream_sequence,
+        trace_id,
+        correlation_id
+      from private.webhook_inbox
+      where connection_id = ${connectionId}::uuid
+        and provider_event_id in (${firstMessageId}, ${secondMessageId})
+      order by stream_sequence
+      for update
+    `;
+    const oldInbox = inboxes[0]!;
+    const queueRows = await sql<Array<{ msg_id: number }>>`
+      select sent.msg_id
+      from pgmq.send(
+        'inbound_whatsapp',
+        jsonb_build_object(
+          'inbox_id', ${oldInbox.id}::uuid,
+          'organization_id', ${oldInbox.organization_id}::uuid,
+          'operation_id', ${operationId}::uuid,
+          'stream_key', ${oldInbox.stream_key},
+          'stream_sequence', ${oldInbox.stream_sequence},
+          'trace_id', ${oldInbox.trace_id}::uuid,
+          'correlation_id', ${oldInbox.correlation_id}::uuid
+        )
+      ) as sent(msg_id)
+    `;
+    const queueMessageId = queueRows[0]!.msg_id;
+    await sql`
+      update private.webhook_inbox
+      set
+        status = 'dead',
+        attempts = 1,
+        queue_message_id = ${queueMessageId},
+        last_error_class = 'non_retryable',
+        last_error_code = 'synthetic_stale_replay',
+        updated_at = now()
+      where id = ${oldInbox.id}::uuid
+    `;
+    const letters = await sql<Array<{ dead_letter_id: string }>>`
+      select private.dead_letter_queue_message(
+        'inbound_whatsapp',
+        ${queueMessageId},
+        ${oldInbox.id}::uuid,
+        ${`webhook:${connectionId}:${firstMessageId}`},
+        jsonb_build_object(
+          'inbox_id', ${oldInbox.id}::uuid,
+          'organization_id', ${oldInbox.organization_id}::uuid,
+          'operation_id', ${operationId}::uuid,
+          'stream_key', ${oldInbox.stream_key},
+          'stream_sequence', ${oldInbox.stream_sequence},
+          'trace_id', ${oldInbox.trace_id}::uuid,
+          'correlation_id', ${oldInbox.correlation_id}::uuid
+        ),
+        1,
+        'non_retryable',
+        'synthetic_stale_replay',
+        ${oldInbox.organization_id}::uuid,
+        ${operationId}::uuid,
+        ${oldInbox.trace_id}::uuid,
+        ${oldInbox.correlation_id}::uuid
+      ) as dead_letter_id
+    `;
+    return {
+      deadLetterId: letters[0]!.dead_letter_id,
+      inboxId: oldInbox.id,
+    };
+  });
+
+  const replayed = await owner.rpc("replay_dead_letter", {
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_dead_letter_id: fixture.deadLetterId,
+  });
+  expect(replayed.error).toBeNull();
+  expect(replayed.data).toEqual(
+    expect.objectContaining({
+      reason: "later_inbound_already_applied",
+      status: "rejected_stale",
+    }),
+  );
+
+  const state = await database<
+    Array<{
+      alert_status: string;
+      inbox_status: string;
+      messages: number;
+    }>
+  >`
+    select
+      inbox.status as inbox_status,
+      alert.status as alert_status,
+      (
+        select count(*)::integer
+        from public.messages as message
+        where message.connection_id = ${connectionId}::uuid
+          and message.provider_message_id in (
+            ${firstMessageId},
+            ${secondMessageId}
+          )
+      ) as messages
+    from private.webhook_inbox as inbox
+    join private.dead_letters as letter
+      on letter.envelope_id = inbox.id
+    join private.durable_processing_alerts as alert
+      on alert.dead_letter_id = letter.id
+    where inbox.id = ${fixture.inboxId}::uuid
+  `;
+  expect(state[0]).toEqual({
+    alert_status: "resolved",
+    inbox_status: "dead",
+    messages: 2,
+  });
 });
 
 test("desativar humano transfere Ownership e invalida devolução pendente", async () => {
@@ -1603,6 +1936,6 @@ test("route HTTP real usa apenas token sintético da Preview", async ({
   });
   expect(response.status()).toBe(202);
   expect(await response.json()).toEqual(
-    expect.objectContaining({ status: "received" }),
+    expect.objectContaining({ status: "accepted" }),
   );
 });

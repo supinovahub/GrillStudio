@@ -28,7 +28,16 @@ continua sendo a captura privada do simulador.
 - `effect_ledger` fecha o efeito outbound. `outcome_unknown` nunca reenvia:
   exige reconciliação.
 - Dead letter mantém a chave do efeito. Replay é explícito, autorizado por
-  `manage_conversations`, auditado e idempotente.
+  `manage_conversations`, auditado e idempotente. Replay inbound antigo não
+  reaplica uma sequência quando uma sequência posterior do mesmo stream já
+  foi concluída.
+- Envelopes inválidos ou cujo artefato canônico desapareceu são colocados em
+  dead letter sem interromper o lote. Alertas de infraestrutura sem tenant
+  continuam visíveis ao service role.
+- Contenção de banco (`40001`, `40P01`, `55P03`) é observada separadamente e
+  não consome o orçamento de falhas do artefato.
+- Supressão de outbound por preflight obsoleto termina também a mensagem
+  pública como `suppressed`; não deixa uma mensagem `queued` sem trabalho.
 
 ## Agenda e wake
 
@@ -36,8 +45,28 @@ continua sendo a captura privada do simulador.
 - Cron SQL publica vencidos a cada `1 second`.
 - Recuperação executa o mesmo worker a cada `5 seconds`.
 - Reconciliação de leases/jobs ocorre a cada minuto.
+- Cada execução do recovery faz uma passagem limitada por fila. O parâmetro de
+  batch não cria loops aninhados nem trabalho quadrático.
 - A rota de ingresso tenta acordar `durable-worker` depois do commit. A Edge
   Function exige JWT; falha no wake não altera o aceite porque o Cron recupera.
+- O sinal PGMQ de dead letter é somente wake e é arquivado pelo runner; o
+  artefato e o alerta permanecem nas tabelas relacionais.
+
+## Retenção e índices
+
+- Corpo e payload brutos de webhook são retidos por 24 horas por padrão, com
+  política por operação entre 1 hora e 30 dias. Depois do prazo, ficam apenas
+  o domínio canônico e os hashes SHA-256.
+- Dead letters resolvidos/replayed são retidos por 30 dias por padrão, com
+  política por operação entre 1 e 365 dias.
+- Índices parciais cobrem os dois pruners, resolução de alertas e FKs dos
+  alertas. A chave única de `scheduled_job_executions(scheduled_job_id)` cobre
+  o lookup da FK do job.
+- `cron.job_run_details` é uma tabela gerenciada pela extensão e o papel da
+  branch não é seu owner; por isso a migration não tenta criar índice nela.
+  Retenção e health são limitados a jobs `t06-%`, o pruner é limitado a 25 mil
+  linhas por execução e mantém sete dias. O gate de escala deve reavaliar os
+  planos com volume real.
 
 ## Segurança
 
@@ -61,6 +90,12 @@ No projeto efêmero do PR:
   `send=false`; RPC do worker: `execute=true`;
 - combinações inválidas de outbox, scheduled job e dead letter foram rejeitadas
   pelas constraints;
+- poison envelopes foram quarentenados sem abortar o runner e respeitaram o
+  tamanho máximo do batch;
+- replay inbound obsoleto foi reconciliado sem duplicar mensagem; replay
+  outbound voltou com `attempts=0` e resolveu o alerta;
+- retenção removeu material bruto preservando os hashes; `EXPLAIN` confirmou
+  os índices dos pruners, dos alertas e de execução de job;
 - Cron armazenado como `1 second`, `5 seconds` e `* * * * *`.
 
 Esses probes são funcionais, não benchmark de produção. Latência p95/p99,

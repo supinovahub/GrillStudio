@@ -568,3 +568,252 @@ test("predecessor lento não consome o orçamento nem manda sucessor para DLQ", 
     });
   });
 });
+
+test("cascade torna envelope órfão e worker o quarentena sem travar a fila", async () => {
+  await database.begin(async (sql) => {
+    const orphanConnectionId = randomUUID();
+    const rawEvent = event(
+      `orphan-${suffix}`,
+      `orphan-chat-${suffix}`,
+    );
+    await sql`
+      insert into public.whatsapp_connections (
+        id,
+        organization_id,
+        operation_id,
+        adapter_type,
+        provider_connection_id,
+        display_name,
+        status,
+        is_test
+      )
+      values (
+        ${orphanConnectionId}::uuid,
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        'simulator',
+        ${`orphan-${suffix}`},
+        'T06 Orphan Synthetic',
+        'active',
+        true
+      )
+    `;
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        '{"role":"service_role"}',
+        true
+      )
+    `;
+    const accepted = await sql<
+      Array<{ accepted: { inbox_id: string; queue_message_id: number } }>
+    >`
+      select public.ingest_simulated_inbound(
+        ${orphanConnectionId}::uuid,
+        ${sql.json(rawEvent)},
+        ${JSON.stringify(rawEvent)},
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as accepted
+    `;
+    const queueMessageId = accepted[0]!.accepted.queue_message_id;
+
+    await sql`
+      delete from public.whatsapp_connections
+      where id = ${orphanConnectionId}::uuid
+    `;
+    await sql`select private.run_durable_workers(10)`;
+
+    const quarantined = await sql<
+      Array<{
+        alerts: number;
+        failure_code: string;
+        inbox_exists: boolean;
+        status: string;
+      }>
+    >`
+      select
+        letter.status,
+        letter.failure_code,
+        exists (
+          select 1
+          from private.webhook_inbox as inbox
+          where inbox.id = letter.envelope_id
+        ) as inbox_exists,
+        (
+          select count(*)::integer
+          from private.durable_processing_alerts as alert
+          where alert.dead_letter_id = letter.id
+        ) as alerts
+      from private.dead_letters as letter
+      where letter.source_queue = 'inbound_whatsapp'
+        and letter.source_message_id = ${queueMessageId}
+    `;
+    expect(quarantined[0]).toEqual({
+      alerts: 1,
+      failure_code: "artifact_missing",
+      inbox_exists: false,
+      status: "pending",
+    });
+  });
+});
+
+test("poison em reconciliation é limitado ao batch e não aborta o runner", async () => {
+  await database.begin(async (sql) => {
+    const inboundPoison = await sql<Array<{ msg_id: number }>>`
+      select sent.msg_id
+      from pgmq.send(
+        'inbound_whatsapp',
+        jsonb_build_object('inbox_id', 'not-a-uuid')
+      ) as sent(msg_id)
+    `;
+    const outboundPoison = await sql<Array<{ msg_id: number }>>`
+      select sent.msg_id
+      from pgmq.send(
+        'outbound_whatsapp',
+        jsonb_build_object('outbox_event_id', 'not-a-uuid')
+      ) as sent(msg_id)
+    `;
+    const messages = await sql<Array<{ msg_id: number }>>`
+      select sent.msg_id
+      from generate_series(1, 50) as fixture(ordinal)
+      cross join lateral pgmq.send(
+        'reconciliation',
+        jsonb_build_object(
+          'outbox_event_id', 'not-a-uuid',
+          'fixture_ordinal', fixture.ordinal
+        )
+      ) as sent(msg_id)
+    `;
+    const messageIds = messages.map((message) => message.msg_id);
+    const startedAt = Date.now();
+    const results = await sql<
+      Array<{
+        result: {
+          dead_letter_signals: number;
+          reconciled: number;
+        };
+      }>
+    >`
+      select private.run_durable_workers(10) as result
+    `;
+    const elapsedMs = Date.now() - startedAt;
+
+    const quarantined = await sql<Array<{ count: number }>>`
+      select count(*)::integer as count
+      from private.dead_letters
+      where source_queue = 'reconciliation'
+        and source_message_id = any(${messageIds}::bigint[])
+    `;
+    const queuePoisons = await sql<
+      Array<{ inbound: number; outbound: number }>
+    >`
+      select
+        count(*) filter (
+          where source_queue = 'inbound_whatsapp'
+            and source_message_id = ${inboundPoison[0]!.msg_id}
+        )::integer as inbound,
+        count(*) filter (
+          where source_queue = 'outbound_whatsapp'
+            and source_message_id = ${outboundPoison[0]!.msg_id}
+        )::integer as outbound
+      from private.dead_letters
+    `;
+    const infrastructureAlerts = await sql<Array<{ count: number }>>`
+      select count(*)::integer as count
+      from public.get_durable_processing_alerts(
+        ${operationId}::uuid,
+        100
+      ) as alert
+      where alert.dead_letter_id in (
+        select letter.id
+        from private.dead_letters as letter
+        where (
+          letter.source_queue = 'inbound_whatsapp'
+          and letter.source_message_id = ${inboundPoison[0]!.msg_id}
+        )
+        or (
+          letter.source_queue = 'outbound_whatsapp'
+          and letter.source_message_id = ${outboundPoison[0]!.msg_id}
+        )
+      )
+    `;
+    const classifications = await sql<
+      Array<{ scheduled: string; worker: string }>
+    >`
+      select
+        private.classify_worker_failure('40001') as worker,
+        private.classify_scheduled_failure('40P01') as scheduled
+    `;
+    expect(quarantined[0]!.count).toBe(10);
+    expect(queuePoisons[0]).toEqual({ inbound: 1, outbound: 1 });
+    expect(infrastructureAlerts[0]!.count).toBe(2);
+    expect(classifications[0]).toEqual({
+      scheduled: "contention",
+      worker: "contention",
+    });
+    expect(results[0]!.result.reconciled).toBe(10);
+    expect(results[0]!.result.dead_letter_signals).toBe(10);
+    expect(elapsedMs).toBeLessThan(15_000);
+  });
+});
+
+test("retenção apaga corpo bruto e preserva hashes canônicos", async () => {
+  await database.begin(async (sql) => {
+    const before = await sql<
+      Array<{ id: string; payload_hash: string; raw_body_hash: string }>
+    >`
+      select id, payload_hash, raw_body_hash
+      from private.webhook_inbox
+      where connection_id = ${connectionId}::uuid
+        and provider_event_id = 'duplicate-001'
+    `;
+    const inbox = before[0]!;
+    await sql`
+      insert into private.durable_retention_policies (
+        organization_id,
+        operation_id,
+        webhook_raw_retention
+      )
+      values (
+        ${organizationId}::uuid,
+        ${operationId}::uuid,
+        interval '1 hour'
+      )
+      on conflict (organization_id, operation_id)
+      do update set webhook_raw_retention = excluded.webhook_raw_retention
+    `;
+    await sql`
+      update private.webhook_inbox
+      set processed_at = now() - interval '2 hours'
+      where id = ${inbox.id}::uuid
+    `;
+    await sql`select private.prune_durable_sensitive_material(100)`;
+
+    const after = await sql<
+      Array<{
+        payload_hash: string;
+        purged: boolean;
+        raw_body: string | null;
+        raw_body_hash: string;
+        raw_payload: unknown;
+      }>
+    >`
+      select
+        raw_body,
+        raw_body_hash,
+        payload_hash,
+        raw_payload,
+        raw_payload_purged_at is not null as purged
+      from private.webhook_inbox
+      where id = ${inbox.id}::uuid
+    `;
+    expect(after[0]).toEqual({
+      payload_hash: inbox.payload_hash,
+      purged: true,
+      raw_body: null,
+      raw_body_hash: inbox.raw_body_hash,
+      raw_payload: {},
+    });
+  });
+});
