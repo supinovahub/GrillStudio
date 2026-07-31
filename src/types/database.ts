@@ -50,6 +50,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "call_assignments_operation_call_fkey"
+            columns: ["organization_id", "operation_id", "call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
             foreignKeyName: "call_assignments_organization_id_call_id_fkey"
             columns: ["organization_id", "call_id"]
             isOneToOne: false
@@ -117,6 +124,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "call_offers_operation_call_fkey"
+            columns: ["organization_id", "operation_id", "call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
           {
             foreignKeyName: "call_offers_organization_id_call_id_fkey"
             columns: ["organization_id", "call_id"]
@@ -186,6 +200,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "calls_operation_opportunity_fkey"
+            columns: ["organization_id", "operation_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
             foreignKeyName: "calls_organization_id_assigned_membership_id_fkey"
             columns: ["organization_id", "assigned_membership_id"]
             isOneToOne: false
@@ -211,6 +232,288 @@ export type Database = {
             columns: ["organization_id", "opportunity_id"]
             isOneToOne: false
             referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      contact_merge_reversals: {
+        Row: {
+          contact_merge_id: string
+          correlation_id: string
+          created_at: string
+          id: string
+          merged_version_before: number
+          operation_id: string
+          organization_id: string
+          reversed_by_membership_id: string
+          reversed_by_user_id: string
+          survivor_version_before: number
+          trace_id: string
+        }
+        Insert: {
+          contact_merge_id: string
+          correlation_id: string
+          created_at?: string
+          id?: string
+          merged_version_before: number
+          operation_id: string
+          organization_id: string
+          reversed_by_membership_id: string
+          reversed_by_user_id: string
+          survivor_version_before: number
+          trace_id: string
+        }
+        Update: {
+          contact_merge_id?: string
+          correlation_id?: string
+          created_at?: string
+          id?: string
+          merged_version_before?: number
+          operation_id?: string
+          organization_id?: string
+          reversed_by_membership_id?: string
+          reversed_by_user_id?: string
+          survivor_version_before?: number
+          trace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contact_merge_reversals_organization_id_contact_merge_id_fkey"
+            columns: ["organization_id", "contact_merge_id"]
+            isOneToOne: false
+            referencedRelation: "contact_merges"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_merge_reversals_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_merge_reversals_organization_id_reversed_by_member_fkey"
+            columns: ["organization_id", "reversed_by_membership_id"]
+            isOneToOne: false
+            referencedRelation: "memberships"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      contact_merges: {
+        Row: {
+          correlation_id: string
+          created_at: string
+          id: string
+          merged_by_membership_id: string
+          merged_by_user_id: string
+          merged_contact_id: string
+          merged_version_before: number
+          operation_id: string
+          organization_id: string
+          snapshot: Json
+          survivor_contact_id: string
+          survivor_version_before: number
+          trace_id: string
+        }
+        Insert: {
+          correlation_id: string
+          created_at?: string
+          id?: string
+          merged_by_membership_id: string
+          merged_by_user_id: string
+          merged_contact_id: string
+          merged_version_before: number
+          operation_id: string
+          organization_id: string
+          snapshot: Json
+          survivor_contact_id: string
+          survivor_version_before: number
+          trace_id: string
+        }
+        Update: {
+          correlation_id?: string
+          created_at?: string
+          id?: string
+          merged_by_membership_id?: string
+          merged_by_user_id?: string
+          merged_contact_id?: string
+          merged_version_before?: number
+          operation_id?: string
+          organization_id?: string
+          snapshot?: Json
+          survivor_contact_id?: string
+          survivor_version_before?: number
+          trace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contact_merges_organization_id_merged_by_membership_id_fkey"
+            columns: ["organization_id", "merged_by_membership_id"]
+            isOneToOne: false
+            referencedRelation: "memberships"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_merges_organization_id_merged_contact_id_fkey"
+            columns: ["organization_id", "merged_contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_merges_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_merges_organization_id_survivor_contact_id_fkey"
+            columns: ["organization_id", "survivor_contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      contact_phone_observations: {
+        Row: {
+          contact_id: string
+          contact_phone_id: string
+          id: string
+          observed_at: string
+          organization_id: string
+          original_value: string
+          source_type: string
+        }
+        Insert: {
+          contact_id: string
+          contact_phone_id: string
+          id?: string
+          observed_at?: string
+          organization_id: string
+          original_value: string
+          source_type: string
+        }
+        Update: {
+          contact_id?: string
+          contact_phone_id?: string
+          id?: string
+          observed_at?: string
+          organization_id?: string
+          original_value?: string
+          source_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contact_phone_observations_contact_phone_fkey"
+            columns: ["organization_id", "contact_id", "contact_phone_id"]
+            isOneToOne: false
+            referencedRelation: "contact_phones"
+            referencedColumns: ["organization_id", "contact_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_phone_observations_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "contact_phone_observations_organization_id_contact_phone_i_fkey"
+            columns: ["organization_id", "contact_phone_id"]
+            isOneToOne: false
+            referencedRelation: "contact_phones"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      contact_phones: {
+        Row: {
+          contact_id: string
+          created_at: string
+          e164: string
+          id: string
+          is_primary: boolean
+          organization_id: string
+          original_value: string
+          verified_at: string | null
+        }
+        Insert: {
+          contact_id: string
+          created_at?: string
+          e164: string
+          id?: string
+          is_primary?: boolean
+          organization_id: string
+          original_value: string
+          verified_at?: string | null
+        }
+        Update: {
+          contact_id?: string
+          created_at?: string
+          e164?: string
+          id?: string
+          is_primary?: boolean
+          organization_id?: string
+          original_value?: string
+          verified_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contact_phones_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      contacts: {
+        Row: {
+          created_at: string
+          display_name: string | null
+          id: string
+          merged_into_contact_id: string | null
+          organization_id: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          merged_into_contact_id?: string | null
+          organization_id: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          merged_into_contact_id?: string | null
+          organization_id?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contacts_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "contacts_organization_id_merged_into_contact_id_fkey"
+            columns: ["organization_id", "merged_into_contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -292,6 +595,97 @@ export type Database = {
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      conversations: {
+        Row: {
+          assigned_membership_id: string | null
+          closed_at: string | null
+          contact_id: string
+          id: string
+          opened_at: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          ownership_type: string
+          sleeping_since: string | null
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          assigned_membership_id?: string | null
+          closed_at?: string | null
+          contact_id: string
+          id?: string
+          opened_at?: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          ownership_type?: string
+          sleeping_since?: string | null
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          assigned_membership_id?: string | null
+          closed_at?: string | null
+          contact_id?: string
+          id?: string
+          opened_at?: string
+          operation_id?: string
+          opportunity_id?: string
+          organization_id?: string
+          ownership_type?: string
+          sleeping_since?: string | null
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_contact_opportunity_fkey"
+            columns: ["organization_id", "contact_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "contact_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_operation_opportunity_fkey"
+            columns: ["organization_id", "operation_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_organization_id_assigned_membership_id_fkey"
+            columns: ["organization_id", "assigned_membership_id"]
+            isOneToOne: false
+            referencedRelation: "memberships"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "conversations_organization_id_opportunity_id_fkey"
+            columns: ["organization_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -764,36 +1158,64 @@ export type Database = {
       }
       opportunities: {
         Row: {
+          amount_scope: string
           assigned_membership_id: string | null
+          contact_id: string
           created_at: string
           id: string
+          loss_reason: string | null
           operation_id: string
           organization_id: string
+          pedro_context: string | null
+          source_type: string
           stage: string
+          stage_entered_at: string
+          unit_count: number
           updated_at: string
           version: number
         }
         Insert: {
+          amount_scope?: string
           assigned_membership_id?: string | null
+          contact_id: string
           created_at?: string
           id?: string
+          loss_reason?: string | null
           operation_id: string
           organization_id: string
+          pedro_context?: string | null
+          source_type?: string
           stage?: string
+          stage_entered_at?: string
+          unit_count?: number
           updated_at?: string
           version?: number
         }
         Update: {
+          amount_scope?: string
           assigned_membership_id?: string | null
+          contact_id?: string
           created_at?: string
           id?: string
+          loss_reason?: string | null
           operation_id?: string
           organization_id?: string
+          pedro_context?: string | null
+          source_type?: string
           stage?: string
+          stage_entered_at?: string
+          unit_count?: number
           updated_at?: string
           version?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "opportunities_organization_contact_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
           {
             foreignKeyName: "opportunities_organization_id_assigned_membership_id_fkey"
             columns: ["organization_id", "assigned_membership_id"]
@@ -813,6 +1235,178 @@ export type Database = {
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      opportunity_participants: {
+        Row: {
+          consent_context: string | null
+          contact_id: string | null
+          created_at: string
+          display_name: string
+          id: string
+          opportunity_id: string
+          organization_id: string
+          phone_e164: string | null
+          phone_original: string | null
+          role: string
+        }
+        Insert: {
+          consent_context?: string | null
+          contact_id?: string | null
+          created_at?: string
+          display_name: string
+          id?: string
+          opportunity_id: string
+          organization_id: string
+          phone_e164?: string | null
+          phone_original?: string | null
+          role?: string
+        }
+        Update: {
+          consent_context?: string | null
+          contact_id?: string | null
+          created_at?: string
+          display_name?: string
+          id?: string
+          opportunity_id?: string
+          organization_id?: string
+          phone_e164?: string | null
+          phone_original?: string | null
+          role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opportunity_participants_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "opportunity_participants_organization_id_opportunity_id_fkey"
+            columns: ["organization_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      opportunity_stage_history: {
+        Row: {
+          actor_membership_id: string | null
+          actor_user_id: string | null
+          correlation_id: string
+          created_at: string
+          from_stage: string | null
+          id: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          reason: string | null
+          to_stage: string
+          trace_id: string
+        }
+        Insert: {
+          actor_membership_id?: string | null
+          actor_user_id?: string | null
+          correlation_id: string
+          created_at?: string
+          from_stage?: string | null
+          id?: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          reason?: string | null
+          to_stage: string
+          trace_id: string
+        }
+        Update: {
+          actor_membership_id?: string | null
+          actor_user_id?: string | null
+          correlation_id?: string
+          created_at?: string
+          from_stage?: string | null
+          id?: string
+          operation_id?: string
+          opportunity_id?: string
+          organization_id?: string
+          reason?: string | null
+          to_stage?: string
+          trace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opportunity_stage_history_operation_opportunity_fkey"
+            columns: ["organization_id", "operation_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "opportunity_stage_history_organization_id_actor_membership_fkey"
+            columns: ["organization_id", "actor_membership_id"]
+            isOneToOne: false
+            referencedRelation: "memberships"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "opportunity_stage_history_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "opportunity_stage_history_organization_id_opportunity_id_fkey"
+            columns: ["organization_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
+      opt_outs: {
+        Row: {
+          contact_id: string
+          created_at: string
+          id: string
+          organization_id: string
+          phone_e164: string | null
+          reason: string | null
+          requested_at: string
+          revoked_at: string | null
+          status: string
+        }
+        Insert: {
+          contact_id: string
+          created_at?: string
+          id?: string
+          organization_id: string
+          phone_e164?: string | null
+          reason?: string | null
+          requested_at?: string
+          revoked_at?: string | null
+          status?: string
+        }
+        Update: {
+          contact_id?: string
+          created_at?: string
+          id?: string
+          organization_id?: string
+          phone_e164?: string | null
+          reason?: string | null
+          requested_at?: string
+          revoked_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opt_outs_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -1018,6 +1612,139 @@ export type Database = {
           },
         ]
       }
+      proactive_approach_requests: {
+        Row: {
+          authorization_confirmed: boolean
+          context: string | null
+          id: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          requested_at: string
+          requested_by_user_id: string
+          status: string
+        }
+        Insert: {
+          authorization_confirmed?: boolean
+          context?: string | null
+          id?: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          requested_at?: string
+          requested_by_user_id: string
+          status?: string
+        }
+        Update: {
+          authorization_confirmed?: boolean
+          context?: string | null
+          id?: string
+          operation_id?: string
+          opportunity_id?: string
+          organization_id?: string
+          requested_at?: string
+          requested_by_user_id?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "proactive_approach_requests_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "proactive_approach_requests_organization_id_opportunity_id_fkey"
+            columns: ["organization_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "proactive_requests_operation_opportunity_fkey"
+            columns: ["organization_id", "operation_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+        ]
+      }
+      source_attributions: {
+        Row: {
+          attributed_at: string
+          contact_id: string
+          created_at: string
+          details: Json
+          id: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          source_label: string | null
+          source_type: string
+        }
+        Insert: {
+          attributed_at?: string
+          contact_id: string
+          created_at?: string
+          details?: Json
+          id?: string
+          operation_id: string
+          opportunity_id: string
+          organization_id: string
+          source_label?: string | null
+          source_type: string
+        }
+        Update: {
+          attributed_at?: string
+          contact_id?: string
+          created_at?: string
+          details?: Json
+          id?: string
+          operation_id?: string
+          opportunity_id?: string
+          organization_id?: string
+          source_label?: string | null
+          source_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "source_attributions_contact_opportunity_fkey"
+            columns: ["organization_id", "contact_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "contact_id", "id"]
+          },
+          {
+            foreignKeyName: "source_attributions_operation_opportunity_fkey"
+            columns: ["organization_id", "operation_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "source_attributions_organization_id_contact_id_fkey"
+            columns: ["organization_id", "contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "source_attributions_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "source_attributions_organization_id_opportunity_id_fkey"
+            columns: ["organization_id", "opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
       staff_profiles: {
         Row: {
           created_at: string
@@ -1197,6 +1924,24 @@ export type Database = {
           token: string
         }[]
       }
+      create_manual_lead: {
+        Args: {
+          amount_scope_value: string
+          internal_note_value: string
+          lead_name: string
+          lead_source: string
+          participant_name: string
+          participant_phone_original: string
+          pedro_context_value: string
+          phone_original: string
+          registration_action: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          unit_count_value: number
+        }
+        Returns: Json
+      }
       deactivate_membership_after_reauthentication: {
         Args: {
           actor_user_id: string
@@ -1212,6 +1957,10 @@ export type Database = {
           revoked_sessions: number
         }[]
       }
+      get_contact_merge_candidates: {
+        Args: { excluded_contact_id: string; target_operation_id: string }
+        Returns: Json
+      }
       get_context_workspace: {
         Args: { target_operation_id: string }
         Returns: Json
@@ -1223,6 +1972,14 @@ export type Database = {
           link_status: string
           organization_name: string
         }[]
+      }
+      get_lead_detail: {
+        Args: { target_opportunity_id: string }
+        Returns: Json
+      }
+      get_lead_list: {
+        Args: { target_operation_id: string; view_scope: string }
+        Returns: Json
       }
       get_member_deactivation_impact: {
         Args: { target_membership_id: string; target_operation_id: string }
@@ -1272,12 +2029,28 @@ export type Database = {
           production_enabled: boolean
         }[]
       }
+      get_pipeline_board: {
+        Args: { target_operation_id: string; view_scope: string }
+        Returns: Json
+      }
       get_team_management: {
         Args: { target_operation_id: string }
         Returns: Json
       }
       initialize_context_drafts: {
         Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
+      merge_contacts: {
+        Args: {
+          duplicate_contact_id: string
+          expected_duplicate_version: number
+          expected_primary_version: number
+          primary_contact_id: string
           request_correlation_id: string
           request_trace_id: string
           target_operation_id: string
@@ -1308,6 +2081,14 @@ export type Database = {
           token: string
         }[]
       }
+      reopen_opportunity_on_inbound: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_opportunity_id: string
+        }
+        Returns: string
+      }
       reserve_invitation_registration: {
         Args: {
           registration_email: string
@@ -1320,6 +2101,16 @@ export type Database = {
           organization_id: string
           predefined_roles: string[]
         }[]
+      }
+      reverse_contact_merge: {
+        Args: {
+          expected_duplicate_version: number
+          expected_primary_version: number
+          request_correlation_id: string
+          request_trace_id: string
+          target_contact_merge_id: string
+        }
+        Returns: Json
       }
       save_institutional_profile_draft: {
         Args: {
@@ -1358,6 +2149,18 @@ export type Database = {
           status: string
           token: string
         }[]
+      }
+      transition_opportunity: {
+        Args: {
+          expected_version: number
+          human_decision: boolean
+          request_correlation_id: string
+          request_trace_id: string
+          target_opportunity_id: string
+          target_stage: string
+          transition_reason: string
+        }
+        Returns: Json
       }
       validate_context_drafts: {
         Args: {
@@ -1504,7 +2307,9 @@ export const Constants = {
   },
 } as const
 
+// Application aliases derived from the generated RPC contracts above.
 export type MemberWorkspace =
   Database["public"]["Functions"]["get_member_workspace_v2"]["Returns"][number]
+
 export type OperationShell =
   Database["public"]["Functions"]["get_operation_shell"]["Returns"][number]

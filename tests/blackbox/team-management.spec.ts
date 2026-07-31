@@ -462,6 +462,7 @@ test("anonymous, pending, revoked, cross-Imobiliária and Corretor scopes are de
   outsiderOperationId = randomUUID();
   const outsiderMembershipId = randomUUID();
   const outsiderOpportunityId = randomUUID();
+  const outsiderContactId = randomUUID();
   const outsiderEmail = `team-outsider-${suffix}@example.com`;
   const outsiderUser = await admin.auth.admin.createUser({
     email: outsiderEmail,
@@ -498,7 +499,13 @@ test("anonymous, pending, revoked, cross-Imobiliária and Corretor scopes are de
     operation_id: outsiderOperationId,
     organization_id: outsiderOrganizationId,
   });
+  await insertFixture("contacts", {
+    display_name: "Contato Externo Sintético",
+    id: outsiderContactId,
+    organization_id: outsiderOrganizationId,
+  });
   await insertFixture("opportunities", {
+    contact_id: outsiderContactId,
     id: outsiderOpportunityId,
     operation_id: outsiderOperationId,
     organization_id: outsiderOrganizationId,
@@ -528,10 +535,23 @@ test("anonymous, pending, revoked, cross-Imobiliária and Corretor scopes are de
 
 test("deactivation revokes sessions, stops Offers and returns human work without random reassignment", async () => {
   const opportunityId = randomUUID();
+  const contactId = randomUUID();
   const callId = randomUUID();
   const assignmentId = randomUUID();
+  const scheduledOpportunityId = randomUUID();
+  const scheduledContactId = randomUUID();
+  const scheduledCallId = randomUUID();
+  const scheduledAssignmentId = randomUUID();
+  const activeConversationId = randomUUID();
+  const sleepingConversationId = randomUUID();
+  await insertFixture("contacts", {
+    display_name: "Contato de Desativação Sintético",
+    id: contactId,
+    organization_id: organizationId,
+  });
   await insertFixture("opportunities", {
     assigned_membership_id: brokerMembershipId,
+    contact_id: contactId,
     id: opportunityId,
     operation_id: operationId,
     organization_id: organizationId,
@@ -560,6 +580,56 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     recipient_membership_id: brokerMembershipId,
     status: "pending",
   });
+  await insertFixture("contacts", {
+    display_name: "Contato com Call a redistribuir",
+    id: scheduledContactId,
+    organization_id: organizationId,
+  });
+  await insertFixture("opportunities", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: scheduledContactId,
+    id: scheduledOpportunityId,
+    operation_id: operationId,
+    organization_id: organizationId,
+    stage: "call_scheduled",
+  });
+  await insertFixture("calls", {
+    assigned_membership_id: brokerMembershipId,
+    id: scheduledCallId,
+    operation_id: operationId,
+    opportunity_id: scheduledOpportunityId,
+    organization_id: organizationId,
+    scheduled_for: new Date(Date.now() + 40 * 60 * 1000).toISOString(),
+    status: "scheduled",
+  });
+  await insertFixture("call_assignments", {
+    call_id: scheduledCallId,
+    id: scheduledAssignmentId,
+    membership_id: brokerMembershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
+  await insertFixture("conversations", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: contactId,
+    id: activeConversationId,
+    operation_id: operationId,
+    opportunity_id: opportunityId,
+    organization_id: organizationId,
+    ownership_type: "human",
+    status: "active",
+  });
+  await insertFixture("conversations", {
+    assigned_membership_id: brokerMembershipId,
+    contact_id: scheduledContactId,
+    id: sleepingConversationId,
+    operation_id: operationId,
+    opportunity_id: scheduledOpportunityId,
+    organization_id: organizationId,
+    ownership_type: "human",
+    sleeping_since: new Date().toISOString(),
+    status: "sleeping",
+  });
 
   const url = requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL");
   const key = requiredEnvironment("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
@@ -586,8 +656,8 @@ test("deactivation revokes sessions, stops Offers and returns human work without
   });
   expect(impact.data).toEqual([
     {
-      calls_within_one_hour: 1,
-      future_calls: 1,
+      calls_within_one_hour: 2,
+      future_calls: 2,
       post_call_opportunities: 1,
     },
   ]);
@@ -605,8 +675,8 @@ test("deactivation revokes sessions, stops Offers and returns human work without
   expect(deactivation.error).toBeNull();
   expect(deactivation.data).toEqual([
     expect.objectContaining({
-      calls_within_one_hour: 1,
-      future_calls: 1,
+      calls_within_one_hour: 2,
+      future_calls: 2,
       post_call_opportunities: 1,
     }),
   ]);
@@ -629,12 +699,105 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     assigned_membership_id: null,
     status: "distributing",
   });
+  const redistributedCall = await admin
+    .from("calls")
+    .select("assigned_membership_id, status")
+    .eq("id", scheduledCallId)
+    .single();
+  expect(redistributedCall.data).toEqual({
+    assigned_membership_id: null,
+    status: "distributing",
+  });
+  const returnedOpportunity = await admin
+    .from("opportunities")
+    .select("assigned_membership_id, stage")
+    .eq("id", scheduledOpportunityId)
+    .single();
+  expect(returnedOpportunity.data).toEqual({
+    assigned_membership_id: null,
+    stage: "in_service",
+  });
+  const returnedHistory = await database<
+    { actor_user_id: string; from_stage: string; reason: string; to_stage: string }[]
+  >`select actor_user_id, from_stage, reason, to_stage
+    from public.opportunity_stage_history
+    where opportunity_id = ${scheduledOpportunityId}
+    order by created_at desc
+    limit 1`;
+  expect(returnedHistory).toEqual([
+    {
+      actor_user_id: ownerId,
+      from_stage: "call_scheduled",
+      reason: "call_redistributed_member_deactivated",
+      to_stage: "in_service",
+    },
+  ]);
   const opportunity = await admin
     .from("opportunities")
     .select("assigned_membership_id")
     .eq("id", opportunityId)
     .single();
   expect(opportunity.data?.assigned_membership_id).toBeNull();
+  const transferredConversations = await admin
+    .from("conversations")
+    .select("assigned_membership_id, id, ownership_type, status, version")
+    .in("id", [activeConversationId, sleepingConversationId])
+    .order("id");
+  expect(transferredConversations.error).toBeNull();
+  expect(
+    transferredConversations.data?.map((conversation) => ({
+      assigned_membership_id: conversation.assigned_membership_id,
+      ownership_type: conversation.ownership_type,
+      status: conversation.status,
+      version: conversation.version,
+    })),
+  ).toEqual(
+    expect.arrayContaining([
+      {
+        assigned_membership_id: ownerMembershipId,
+        ownership_type: "human",
+        status: "active",
+        version: 2,
+      },
+      {
+        assigned_membership_id: ownerMembershipId,
+        ownership_type: "human",
+        status: "sleeping",
+        version: 2,
+      },
+    ]),
+  );
+  const ownershipAudit = await database<
+    {
+      after_state: {
+        assigned_membership_id: string;
+        pedro_ownership: boolean;
+        random_reassignment: boolean;
+      };
+      before_state: { assigned_membership_id: string };
+      target_id: string;
+    }[]
+  >`
+    select target_id, before_state, after_state
+    from audit.audit_events
+    where target_id in (${activeConversationId}, ${sleepingConversationId})
+      and action =
+        'conversation.ownership_transferred_on_member_deactivation'
+    order by target_id
+  `;
+  expect(ownershipAudit).toHaveLength(2);
+  for (const audit of ownershipAudit) {
+    expect(audit.before_state.assigned_membership_id).toBe(
+      brokerMembershipId,
+    );
+    expect(audit.after_state).toEqual(
+      expect.objectContaining({
+        assigned_membership_id: ownerMembershipId,
+        pedro_ownership: false,
+        random_reassignment: false,
+      }),
+    );
+  }
   const assignment = await admin
     .from("call_assignments")
     .select("revoke_reason, revoked_at")
@@ -663,6 +826,7 @@ test("deactivation revokes sessions, stops Offers and returns human work without
     "membership_permissions",
     "staff_profiles",
     "opportunities",
+    "conversations",
     "calls",
     "call_offers",
     "call_assignments",
@@ -694,6 +858,18 @@ test("deactivation revokes sessions, stops Offers and returns human work without
       after_state: expect.objectContaining({ reauthenticated: true }),
     }),
   );
+  const redistributionAudit = await database<
+    { action: string; after_state: { random_reassignment: boolean } }[]
+  >`select action, after_state
+    from audit.audit_events
+    where target_id = ${scheduledOpportunityId}
+      and action = 'opportunity.returned_to_service_on_member_deactivation'`;
+  expect(redistributionAudit).toEqual([
+    {
+      action: "opportunity.returned_to_service_on_member_deactivation",
+      after_state: expect.objectContaining({ random_reassignment: false }),
+    },
+  ]);
 });
 
 test("Dono creates an individual invitation with a predefined Corretor role", async ({
