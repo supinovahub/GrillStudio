@@ -23,9 +23,11 @@ let managerId = "";
 let rlsManagerId = "";
 let outsiderId = "";
 let pendingId = "";
+let unassignedUserId = "";
 let ownerOrganizationId = "";
 let ownerOperationId = "";
 let ownerMembershipId = "";
+let secondaryOperationId = "";
 let outsiderOrganizationId = "";
 let outsiderOperationId = "";
 let confirmationTokenHash = "";
@@ -111,6 +113,7 @@ test.beforeAll(async () => {
 
   ownerOrganizationId = randomUUID();
   ownerOperationId = randomUUID();
+  secondaryOperationId = randomUUID();
   outsiderOrganizationId = randomUUID();
   outsiderOperationId = randomUUID();
 
@@ -144,6 +147,12 @@ test.beforeAll(async () => {
       organization_id: organizationId,
     });
   }
+  await insertFixture("operations", {
+    id: secondaryOperationId,
+    is_default: false,
+    name: `Operação sem atribuição ${suffix}`,
+    organization_id: ownerOrganizationId,
+  });
 
   ownerId = await createMembershipFixture({
     email: ownerEmail,
@@ -216,6 +225,18 @@ test.beforeAll(async () => {
     organizationId: ownerOrganizationId,
     status: "pending",
   });
+  const { data: unassignedUser, error: unassignedUserError } =
+    await admin.auth.admin.createUser({
+      email: `unassigned-${suffix}@example.com`,
+      email_confirm: true,
+      password: ownerPassword,
+    });
+  if (unassignedUserError) {
+    throw new Error(
+      `Could not create unassigned Auth fixture: ${unassignedUserError.code}`,
+    );
+  }
+  unassignedUserId = unassignedUser.user.id;
 
   await insertFixture("system_pauses", {
     activated_by: outsiderId,
@@ -244,7 +265,11 @@ test.afterAll(async () => {
     return;
   }
 
-  for (const operationId of [ownerOperationId, outsiderOperationId]) {
+  for (const operationId of [
+    ownerOperationId,
+    secondaryOperationId,
+    outsiderOperationId,
+  ]) {
     if (operationId) {
       await admin
         .from("membership_operations")
@@ -263,6 +288,7 @@ test.afterAll(async () => {
     rlsManagerId,
     outsiderId,
     pendingId,
+    unassignedUserId,
   ]) {
     if (userId) {
       await admin.auth.admin.deleteUser(userId);
@@ -651,7 +677,7 @@ test("enforces every exposed table boundary and denies all client writes", async
         organization_id: ownerOrganizationId,
         role: "broker",
         status: "active",
-        user_id: pendingId,
+        user_id: unassignedUserId,
       },
       table: "memberships",
       update: { status: "active" },
@@ -661,7 +687,7 @@ test("enforces every exposed table boundary and denies all client writes", async
       filter: "membership_id",
       insert: {
         membership_id: ownerMembershipId,
-        operation_id: ownerOperationId,
+        operation_id: secondaryOperationId,
         organization_id: ownerOrganizationId,
       },
       table: "membership_operations",
@@ -671,13 +697,13 @@ test("enforces every exposed table boundary and denies all client writes", async
     {
       filter: "operation_id",
       insert: {
-        operation_id: ownerOperationId,
+        operation_id: secondaryOperationId,
         organization_id: ownerOrganizationId,
         production_enabled: false,
       },
       table: "operation_settings",
       update: { production_enabled: false },
-      value: ownerOperationId,
+      value: secondaryOperationId,
     },
     {
       filter: "operation_id",
