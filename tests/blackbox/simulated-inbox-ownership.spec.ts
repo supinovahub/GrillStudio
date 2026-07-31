@@ -485,6 +485,22 @@ test("materializa inbound idempotente e prende a Conversa à origem", async () =
     message_count: 1,
     provider_chat_id: "chat-primary",
   });
+  const capacity = await database<
+    Array<{ capacity_state: string; slots: number }>
+  >`
+    select
+      conversation.capacity_state,
+      count(slot.conversation_id)::integer as slots
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    where conversation.id = ${conversationId}::uuid
+    group by conversation.id
+  `;
+  expect(capacity[0]).toEqual({
+    capacity_state: "active",
+    slots: 1,
+  });
 
   const inboundAudit = await database<Array<{ count: number }>>`
     select count(*)::integer as count
@@ -527,6 +543,22 @@ test("Ownership versiona, pausa só Pedro e audita sem texto livre", async () =>
       ownership_type: "human",
     }),
   );
+  const assumedCapacity = await database<
+    Array<{ capacity_state: string; slots: number }>
+  >`
+    select
+      conversation.capacity_state,
+      count(slot.conversation_id)::integer as slots
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    where conversation.id = ${conversationId}::uuid
+    group by conversation.id
+  `;
+  expect(assumedCapacity[0]).toEqual({
+    capacity_state: "excluded",
+    slots: 0,
+  });
 
   const stale = await assume(owner, conversationId, startingVersion);
   expect(stale.error).not.toBeNull();
@@ -548,6 +580,22 @@ test("Ownership versiona, pausa só Pedro e audita sem texto livre", async () =>
   expect(returned.data).toEqual(
     expect.objectContaining({ ownership_type: "pedro", pending_return: false }),
   );
+  const returnedCapacity = await database<
+    Array<{ capacity_state: string; slots: number }>
+  >`
+    select
+      conversation.capacity_state,
+      count(slot.conversation_id)::integer as slots
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    where conversation.id = ${conversationId}::uuid
+    group by conversation.id
+  `;
+  expect(returnedCapacity[0]).toEqual({
+    capacity_state: "active",
+    slots: 1,
+  });
 
   const pauseInbound = await ingest(
     "message-pause",
@@ -572,6 +620,22 @@ test("Ownership versiona, pausa só Pedro e audita sem texto livre", async () =>
       ownership_type: "human",
     }),
   );
+  const pausedCapacity = await database<
+    Array<{ capacity_state: string; slots: number }>
+  >`
+    select
+      conversation.capacity_state,
+      count(slot.conversation_id)::integer as slots
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    where conversation.id = ${pauseTargetId}::uuid
+    group by conversation.id
+  `;
+  expect(pausedCapacity[0]).toEqual({
+    capacity_state: "excluded",
+    slots: 0,
+  });
 
   const responseWhilePaused = await owner.rpc("send_human_message", {
     command_id: randomUUID(),
@@ -637,6 +701,78 @@ test("Ownership versiona, pausa só Pedro e audita sem texto livre", async () =>
       expect.objectContaining({ action: "conversation.returned_to_pedro" }),
     ]),
   );
+});
+
+test("pausa manual permanece separada da retomada automática", async () => {
+  await database`
+    select private.apply_operation_capacity_command(
+      ${operationId}::uuid,
+      null,
+      'set_manual_pause',
+      null,
+      null,
+      null,
+      now(),
+      null,
+      ${ownerMembershipId}::uuid,
+      'Pausa operacional sintética',
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  await database`
+    select private.apply_operation_capacity_command(
+      ${operationId}::uuid,
+      null,
+      'evaluate_resume',
+      null,
+      null,
+      null,
+      now(),
+      null,
+      null,
+      null,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+
+  const paused = await database<
+    Array<{
+      manual_pause_reason: string;
+      manual_paused_by_membership_id: string;
+      manual_proactive_paused: boolean;
+    }>
+  >`
+    select
+      manual_proactive_paused,
+      manual_pause_reason,
+      manual_paused_by_membership_id
+    from private.operation_capacity_state
+    where operation_id = ${operationId}::uuid
+  `;
+  expect(paused[0]).toEqual({
+    manual_pause_reason: "Pausa operacional sintética",
+    manual_paused_by_membership_id: ownerMembershipId,
+    manual_proactive_paused: true,
+  });
+
+  await database`
+    select private.apply_operation_capacity_command(
+      ${operationId}::uuid,
+      null,
+      'clear_manual_pause',
+      null,
+      null,
+      null,
+      now(),
+      null,
+      ${ownerMembershipId}::uuid,
+      null,
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
 });
 
 test("nega broker, gestor sem permissão, outsider e cross-operation", async () => {
@@ -919,6 +1055,22 @@ test("conflito alias/telefone exige revisão sem auto-merge", async () => {
     requires_human_review: true,
     review_reason: "identity_phone_conflict",
   });
+  const reviewCapacity = await database<
+    Array<{ capacity_state: string; slots: number }>
+  >`
+    select
+      conversation.capacity_state,
+      count(slot.conversation_id)::integer as slots
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    where conversation.id = ${targetId}::uuid
+    group by conversation.id
+  `;
+  expect(reviewCapacity[0]).toEqual({
+    capacity_state: "excluded",
+    slots: 0,
+  });
   const contacts = await database<Array<{ id: string; status: string }>>`
     select id, status
     from public.contacts
@@ -955,6 +1107,38 @@ test("conflito alias/telefone exige revisão sem auto-merge", async () => {
       and reason = 'ambiguous_opportunity'
   `;
   expect(storedReview[0]!.count).toBe(1);
+
+  const activeAmbiguity = await ingest(
+    "message-active-identity-conflict",
+    "chat-primary",
+    "identity-conflict",
+  );
+  expect(activeAmbiguity.error).toBeNull();
+  expect(activeAmbiguity.data).toEqual(
+    expect.objectContaining({ conversation_id: conversationId }),
+  );
+  const activeAmbiguityCapacity = await database<
+    Array<{
+      capacity_state: string;
+      is_paused: boolean;
+      slots: number;
+    }>
+  >`
+    select
+      conversation.capacity_state,
+      conversation.is_paused,
+      count(slot.conversation_id)::integer as slots
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    where conversation.id = ${conversationId}::uuid
+    group by conversation.id
+  `;
+  expect(activeAmbiguityCapacity[0]).toEqual({
+    capacity_state: "excluded",
+    is_paused: true,
+    slots: 0,
+  });
 });
 
 test("lost usa o helper T04 e purchased permanece fechado", async () => {
@@ -1095,6 +1279,27 @@ test("pin CAS de um cadastro manual preserva o humano", async () => {
     assigned_membership_id: ownerMembershipId,
     connection_id: connectionId,
   });
+  const pinnedCapacity = await database<
+    Array<{ backlog: number; capacity_state: string; slots: number }>
+  >`
+    select
+      conversation.capacity_state,
+      count(distinct slot.conversation_id)::integer as slots,
+      count(distinct backlog.id)::integer as backlog
+    from public.conversations as conversation
+    left join private.conversation_capacity_slots as slot
+      on slot.conversation_id = conversation.id
+    left join private.operation_capacity_backlog as backlog
+      on backlog.conversation_id = conversation.id
+      and backlog.status = 'waiting'
+    where conversation.id = ${manualIds.conversation_id}::uuid
+    group by conversation.id
+  `;
+  expect(pinnedCapacity[0]).toEqual({
+    backlog: 0,
+    capacity_state: "excluded",
+    slots: 0,
+  });
 });
 
 test("retorno cheio fica pendente e resposta humana cancela uma única vez", async () => {
@@ -1135,6 +1340,40 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
       'shadow'
     from opportunities as opportunity
   `;
+
+  const capacityTargets = await database<Array<{ id: string }>>`
+    select conversation.id
+    from public.conversations as conversation
+    join public.opportunities as opportunity
+      on opportunity.id = conversation.opportunity_id
+    where conversation.operation_id = ${operationId}::uuid
+      and opportunity.source_type = 'capacity_fixture'
+    order by conversation.id
+  `;
+  for (const target of capacityTargets) {
+    await database`
+      select private.apply_operation_capacity_command(
+        ${operationId}::uuid,
+        ${target.id}::uuid,
+        'admit_inbound',
+        'inbound',
+        'new_inbound',
+        null,
+        '2026-07-31T12:00:00Z'::timestamptz,
+        ${`capacity-fixture:${target.id}`},
+        null,
+        null,
+        gen_random_uuid(),
+        gen_random_uuid()
+      )
+    `;
+  }
+  const saturated = await database<Array<{ slots: number }>>`
+    select count(*)::integer as slots
+    from private.conversation_capacity_slots
+    where operation_id = ${operationId}::uuid
+  `;
+  expect(saturated[0]!.slots).toBe(30);
 
   const assumed = await assume(owner, conversationId, await version(conversationId));
   expect(assumed.error).toBeNull();
@@ -1677,7 +1916,7 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
   expect(audit[0]!.count).toBe(1);
 
   async function raceDeactivationAgainstCommand(
-    kind: "assume" | "pause",
+    kind: "assume" | "pause" | "return",
     whatsapp: string,
   ) {
     const raceManager = await createManagerFixture(
@@ -1693,6 +1932,14 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
     const raceConversationId = (
       raceInbound.data as { conversation_id: string }
     ).conversation_id;
+    if (kind === "return") {
+      const owned = await assume(
+        raceManager.client,
+        raceConversationId,
+        await version(raceConversationId),
+      );
+      expect(owned.error).toBeNull();
+    }
     const expectedVersion = await version(raceConversationId);
 
     let releaseRowLock!: () => void;
@@ -1715,14 +1962,19 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
     });
 
     await rowLocked;
-    const command =
-      kind === "assume"
-        ? assume(raceManager.client, raceConversationId, expectedVersion)
-        : pause(
+    const command = kind === "assume"
+      ? assume(raceManager.client, raceConversationId, expectedVersion)
+      : kind === "pause"
+        ? pause(
             raceManager.client,
             raceConversationId,
             expectedVersion,
             "Revisão concorrente",
+          )
+        : returnToPedro(
+            raceManager.client,
+            raceConversationId,
+            expectedVersion,
           );
 
     try {
@@ -1793,6 +2045,72 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
 
   await raceDeactivationAgainstCommand("assume", "+5511999990031");
   await raceDeactivationAgainstCommand("pause", "+5511999990032");
+  await raceDeactivationAgainstCommand("return", "+5511999990033");
+
+  const inboundReturnManager = await createManagerFixture(
+    "race-inbound-return",
+    "+5511999990034",
+  );
+  const inboundReturnSeed = await ingest(
+    "message-inbound-return-seed",
+    "chat-inbound-return",
+    "lead-inbound-return",
+  );
+  expect(inboundReturnSeed.error).toBeNull();
+  const inboundReturnConversationId = (
+    inboundReturnSeed.data as { conversation_id: string }
+  ).conversation_id;
+  const inboundReturnOwned = await assume(
+    inboundReturnManager.client,
+    inboundReturnConversationId,
+    await version(inboundReturnConversationId),
+  );
+  expect(inboundReturnOwned.error).toBeNull();
+  const inboundReturnVersion = await version(inboundReturnConversationId);
+
+  const [returnRace, inboundRace] = await Promise.all([
+    returnToPedro(
+      inboundReturnManager.client,
+      inboundReturnConversationId,
+      inboundReturnVersion,
+    ),
+    ingest(
+      "message-inbound-return-race",
+      "chat-inbound-return",
+      "lead-inbound-return",
+    ),
+  ]);
+  expect(returnRace.error?.code).not.toBe("40P01");
+  expect(inboundRace.error?.code).not.toBe("40P01");
+  expect(inboundRace.error).toBeNull();
+
+  const raceCapacity = await database<
+    Array<{
+      capacity_state: string;
+      global_slots: number;
+      local_slots: number;
+    }>
+  >`
+    select
+      conversation.capacity_state,
+      (
+        select count(*)::integer
+        from private.conversation_capacity_slots
+        where operation_id = ${operationId}::uuid
+      ) as global_slots,
+      (
+        select count(*)::integer
+        from private.conversation_capacity_slots
+        where conversation_id = ${inboundReturnConversationId}::uuid
+      ) as local_slots
+    from public.conversations as conversation
+    where conversation.id = ${inboundReturnConversationId}::uuid
+  `;
+  expect(raceCapacity[0]!.global_slots).toBeLessThanOrEqual(30);
+  expect(raceCapacity[0]!.local_slots).toBeLessThanOrEqual(1);
+  expect(["active", "excluded", "waiting"]).toContain(
+    raceCapacity[0]!.capacity_state,
+  );
 });
 
 test("Inbox renderiza lista, mensagens, contexto e Ownership no desktop e celular", async ({

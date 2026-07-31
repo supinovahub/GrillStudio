@@ -1054,7 +1054,7 @@ test("predecessor lento não consome o orçamento nem manda sucessor para DLQ", 
         120
       )
     `;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       await sql`
         select *
         from pgmq.set_vt(
@@ -1066,6 +1066,12 @@ test("predecessor lento não consome o orçamento nem manda sucessor para DLQ", 
       await sql`
         select private.consume_scheduled_actions(1, gen_random_uuid(), 5)
       `;
+      const progress = await sql<Array<{ contention_count: number }>>`
+        select contention_count
+        from public.scheduled_jobs
+        where id = ${successor.id}::uuid
+      `;
+      if (progress[0]!.contention_count >= 10) break;
     }
 
     const contended = await sql<
@@ -1369,17 +1375,36 @@ test("reconciliation forjada não altera outbound vivo e o efeito ainda executa"
   await database.begin(async (sql) => {
     await sql`select pgmq.purge_queue('outbound_whatsapp')`;
     await sql`select pgmq.purge_queue('reconciliation')`;
+    const targets = await sql<
+      Array<{ id: string; version: number }>
+    >`
+      select id, version
+      from public.conversations
+      where connection_id = ${connectionId}::uuid
+      order by opened_at, id
+      limit 1
+      for update
+    `;
+    const target = targets[0]!;
+    await sql`
+      select private.apply_operation_capacity_command(
+        ${operationId}::uuid,
+        ${target.id}::uuid,
+        'prepare_human',
+        null,
+        null,
+        null,
+        now(),
+        null,
+        null,
+        'fixture humano para outbound durável',
+        gen_random_uuid(),
+        gen_random_uuid()
+      )
+    `;
     const conversations = await sql<
       Array<{ id: string; version: number }>
     >`
-      with target as (
-        select id
-        from public.conversations
-        where connection_id = ${connectionId}::uuid
-        order by opened_at, id
-        limit 1
-        for update
-      )
       update public.conversations as conversation
       set
         status = 'active',
@@ -1390,8 +1415,7 @@ test("reconciliation forjada não altera outbound vivo e o efeito ainda executa"
         is_paused = false,
         pending_return = false,
         updated_at = now()
-      from target
-      where conversation.id = target.id
+      where conversation.id = ${target.id}::uuid
       returning conversation.id, conversation.version
     `;
     const conversation = conversations[0]!;

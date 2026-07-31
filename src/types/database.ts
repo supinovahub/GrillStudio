@@ -603,6 +603,8 @@ export type Database = {
         Row: {
           assigned_membership_id: string | null
           automation_mode: string
+          capacity_state: string
+          capacity_state_changed_at: string
           closed_at: string | null
           connection_id: string | null
           contact_id: string
@@ -610,6 +612,7 @@ export type Database = {
           is_paused: boolean
           last_inbound_at: string | null
           last_outbound_at: string | null
+          last_pedro_outbound_at: string | null
           opened_at: string
           operation_id: string
           opportunity_id: string
@@ -635,6 +638,8 @@ export type Database = {
         Insert: {
           assigned_membership_id?: string | null
           automation_mode?: string
+          capacity_state?: string
+          capacity_state_changed_at?: string
           closed_at?: string | null
           connection_id?: string | null
           contact_id: string
@@ -642,6 +647,7 @@ export type Database = {
           is_paused?: boolean
           last_inbound_at?: string | null
           last_outbound_at?: string | null
+          last_pedro_outbound_at?: string | null
           opened_at?: string
           operation_id: string
           opportunity_id: string
@@ -667,6 +673,8 @@ export type Database = {
         Update: {
           assigned_membership_id?: string | null
           automation_mode?: string
+          capacity_state?: string
+          capacity_state_changed_at?: string
           closed_at?: string | null
           connection_id?: string | null
           contact_id?: string
@@ -674,6 +682,7 @@ export type Database = {
           is_paused?: boolean
           last_inbound_at?: string | null
           last_outbound_at?: string | null
+          last_pedro_outbound_at?: string | null
           opened_at?: string
           operation_id?: string
           opportunity_id?: string
@@ -1139,7 +1148,9 @@ export type Database = {
           created_at: string
           created_by_membership_id: string | null
           created_by_type: string
+          deleted_at: string | null
           direction: string
+          edited_at: string | null
           id: string
           idempotency_key: string | null
           inbound_stream_sequence: number | null
@@ -1148,6 +1159,10 @@ export type Database = {
           organization_id: string
           provider_message_id: string | null
           provider_occurred_at: string | null
+          provider_revision_event_id: string | null
+          provider_revision_kind: string | null
+          provider_revision_occurred_at: string | null
+          revision: number
           status: string
         }
         Insert: {
@@ -1157,7 +1172,9 @@ export type Database = {
           created_at?: string
           created_by_membership_id?: string | null
           created_by_type: string
+          deleted_at?: string | null
           direction: string
+          edited_at?: string | null
           id?: string
           idempotency_key?: string | null
           inbound_stream_sequence?: number | null
@@ -1166,6 +1183,10 @@ export type Database = {
           organization_id: string
           provider_message_id?: string | null
           provider_occurred_at?: string | null
+          provider_revision_event_id?: string | null
+          provider_revision_kind?: string | null
+          provider_revision_occurred_at?: string | null
+          revision?: number
           status: string
         }
         Update: {
@@ -1175,7 +1196,9 @@ export type Database = {
           created_at?: string
           created_by_membership_id?: string | null
           created_by_type?: string
+          deleted_at?: string | null
           direction?: string
+          edited_at?: string | null
           id?: string
           idempotency_key?: string | null
           inbound_stream_sequence?: number | null
@@ -1184,6 +1207,10 @@ export type Database = {
           organization_id?: string
           provider_message_id?: string | null
           provider_occurred_at?: string | null
+          provider_revision_event_id?: string | null
+          provider_revision_kind?: string | null
+          provider_revision_occurred_at?: string | null
+          revision?: number
           status?: string
         }
         Relationships: [
@@ -1224,8 +1251,12 @@ export type Database = {
         Row: {
           active_context_publication_id: string | null
           created_at: string
+          inbound_close_minute: number
+          inbound_open_minute: number
           operation_id: string
           organization_id: string
+          proactive_close_minute: number
+          proactive_open_minute: number
           production_enabled: boolean
           updated_at: string
           version: number
@@ -1233,8 +1264,12 @@ export type Database = {
         Insert: {
           active_context_publication_id?: string | null
           created_at?: string
+          inbound_close_minute?: number
+          inbound_open_minute?: number
           operation_id: string
           organization_id: string
+          proactive_close_minute?: number
+          proactive_open_minute?: number
           production_enabled?: boolean
           updated_at?: string
           version?: number
@@ -1242,8 +1277,12 @@ export type Database = {
         Update: {
           active_context_publication_id?: string | null
           created_at?: string
+          inbound_close_minute?: number
+          inbound_open_minute?: number
           operation_id?: string
           organization_id?: string
+          proactive_close_minute?: number
+          proactive_open_minute?: number
           production_enabled?: boolean
           updated_at?: string
           version?: number
@@ -2494,6 +2533,10 @@ export type Database = {
           production_enabled: boolean
         }[]
       }
+      get_operation_capacity_status: {
+        Args: { target_operation_id: string }
+        Returns: Json
+      }
       get_operation_shell: {
         Args: never
         Returns: {
@@ -2717,6 +2760,76 @@ export type Database = {
         }
         Returns: Json
       }
+      service_apply_provider_message_revision: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_connection_id: string
+          target_operation_id: string
+          target_organization_id: string
+          target_payload_hash: string
+          target_provider_event_id: string
+          target_provider_message_id: string
+          target_provider_occurred_at: string
+          target_revised_body: string
+          target_revision_kind: string
+        }
+        Returns: Json
+      }
+      service_cancel_response_batch: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_batch_id: string
+          target_operation_id: string
+          target_reason: string
+        }
+        Returns: Json
+      }
+      service_claim_next_response_batch: {
+        Args: {
+          lease_seconds: number
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          target_worker_id: string
+        }
+        Returns: Json
+      }
+      service_complete_response_batch: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_batch_id: string
+          target_effect_key: string
+          target_input_hash: string
+          target_lease_token: string
+          target_operation_id: string
+          target_worker_id: string
+        }
+        Returns: Json
+      }
+      service_consume_response_batch: {
+        Args: {
+          target_batch_id: string
+          target_effect_key: string
+          target_lease_token: string
+          target_operation_id: string
+          target_worker_id: string
+        }
+        Returns: Json
+      }
+      service_record_pedro_outbound_sent: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          sent_at: string
+          target_conversation_id: string
+          target_effect_key: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
       set_general_invitation_link_status: {
         Args: {
           request_correlation_id: string
@@ -2729,6 +2842,16 @@ export type Database = {
           status: string
           token: string
         }[]
+      }
+      set_operation_proactive_pause: {
+        Args: {
+          paused: boolean
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          target_reason: string
+        }
+        Returns: Json
       }
       transition_opportunity: {
         Args: {
