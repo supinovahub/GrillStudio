@@ -168,12 +168,12 @@ export default async function ConversationPage({
           </aside>
 
           <section className="conversation-thread" aria-label="Mensagens">
-            <Link
+            <a
               className="button mobile-context-link"
               href={`${returnTo}?painel=contexto`}
             >
               Ver contexto e Ownership
-            </Link>
+            </a>
             {conversation.messages.map((message) => (
               <article
                 className={`message-bubble ${message.direction}`}
@@ -227,9 +227,12 @@ export default async function ConversationPage({
             aria-label="Contexto operacional"
             className="conversation-context"
           >
-            <Link className="text-link mobile-thread-link" href={returnTo}>
+            <a
+              className="text-link mobile-thread-link"
+              href={`${returnTo}?painel=conversa`}
+            >
               ← Voltar para conversa
-            </Link>
+            </a>
             <section className="lead-panel">
               <p className="eyebrow">Contexto</p>
               <h2>Oportunidade</h2>

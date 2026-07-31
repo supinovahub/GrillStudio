@@ -38,8 +38,9 @@ gera auditoria. Nesta fatia, o seam transacional de capacidade aceita menos de
 30 Conversas ativas do Pedro; o controle completo pertence a T07.
 
 Comandos e desativação de Membro compartilham um lock transacional antes do
-lock da Conversa. Triggers de constraint diferidos também impedem que uma
-Conversa aberta confirme Ownership humano em Membro inativo.
+lock da Conversa. Um guard imediato recusa qualquer escrita de Conversa aberta
+que aponte para Membro inativo; triggers de constraint diferidos preservam a
+mesma invariável no commit da desativação transacional.
 
 ## Idempotência, transporte e segurança
 
@@ -68,8 +69,10 @@ Conversa aberta confirme Ownership humano em Membro inativo.
   mensagem, origem, etapa, Ownership, modo, pendência e revisão.
 - `/app/atendimentos/[id]`: no desktop mostra lista, conversa e contexto em
   três painéis; oferece apenas as ações autorizadas pelo servidor.
-- No mobile, lista, conversa e contexto são passos separados. A conversa vem
-  antes do contexto na ordem de leitura e preserva Ownership no cabeçalho.
+- Em larguras intermediárias e no mobile, lista, conversa e contexto são
+  passos separados, sem overflow mesmo com uma mensagem de 12 mil caracteres
+  sem espaços. A conversa vem antes do contexto na ordem de leitura e preserva
+  Ownership no cabeçalho.
 
 ## Matriz de verificação
 
@@ -86,7 +89,7 @@ Conversa aberta confirme Ownership humano em Membro inativo.
 | Capacidade cheia, devolução pendente e cancelamento por mensagem humana | Black-box |
 | Replay divergente em ator/conteúdo, limite exato e excesso de 12 mil | Black-box |
 | Desativação transfere Ownership e invalida pendência | Black-box |
-| Inbox desktop/móvel e rota HTTP sintética real | Black-box |
+| Inbox desktop/1024/mobile sem overflow, navegação e rota HTTP sintética real | Black-box |
 | Normalização do contrato, autenticação e limite byte a byte da rota | Unitário |
 
 O gate da Preview exige ainda migrations desde zero, `db lint`, tipos gerados

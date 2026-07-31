@@ -1280,6 +1280,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+  min-width: 0;
   min-height: 34rem;
   padding: 1.25rem;
 }
@@ -1309,6 +1310,7 @@ button {
 .message-bubble p {
   line-height: 1.5;
   margin: 0.3rem 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -1353,7 +1355,7 @@ button {
   padding: 0.8rem;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1240px) {
   .conversation-layout {
     grid-template-columns: 1fr;
   }

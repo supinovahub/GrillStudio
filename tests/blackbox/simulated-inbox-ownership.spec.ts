@@ -1362,6 +1362,13 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
       ownership_type: "human",
     });
 
+    const deactivatedMembership = await database<Array<{ status: string }>>`
+      select status
+      from public.memberships
+      where id = ${raceManager.membershipId}::uuid
+    `;
+    expect(deactivatedMembership[0]!.status).toBe("revoked");
+
     const rejectedInactiveOwner = await database`
       update public.conversations
       set
@@ -1369,6 +1376,7 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
         ownership_type = 'human',
         version = version + 1
       where id = ${raceConversationId}::uuid
+      returning assigned_membership_id
     `.catch((error: unknown) => error);
     expect(rejectedInactiveOwner).toBeInstanceOf(Error);
   }
@@ -1431,6 +1439,32 @@ test("Inbox renderiza lista, mensagens, contexto e Ownership no desktop e celula
     );
   });
   expect(threadPrecedesContext).toBe(true);
+
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.goto("/app/atendimentos");
+  await expect(primaryLink).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+  await primaryLink.click();
+  await expect(page.getByText("Mensagem message-primary")).toBeVisible();
+  await expect(thread).toBeVisible();
+  await expect(context).toBeHidden();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+  await page
+    .getByRole("link", { name: "Ver contexto e Ownership" })
+    .click();
+  await expect(thread).toBeHidden();
+  await expect(context).toBeVisible();
+  await page.getByRole("link", { name: "Voltar para conversa" }).click();
+  await expect(thread).toBeVisible();
+  await expect(context).toBeHidden();
 
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/app/atendimentos");
