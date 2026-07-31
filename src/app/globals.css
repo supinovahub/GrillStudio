@@ -1201,8 +1201,75 @@ button {
 .conversation-layout {
   align-items: start;
   display: grid;
-  gap: 1.25rem;
-  grid-template-columns: minmax(0, 1.55fr) minmax(18rem, 0.75fr);
+  gap: 1rem;
+  grid-template-columns:
+    minmax(13rem, 0.68fr)
+    minmax(22rem, 1.45fr)
+    minmax(18rem, 0.82fr);
+}
+
+.conversation-list-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-large);
+  box-shadow: var(--shadow);
+  max-height: 42rem;
+  overflow: auto;
+}
+
+.conversation-panel-heading {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.25rem;
+  padding: 1rem;
+}
+
+.conversation-panel-heading p {
+  margin: 0;
+}
+
+.conversation-list-panel nav {
+  display: grid;
+}
+
+.conversation-list-link {
+  color: inherit;
+  display: grid;
+  gap: 0.3rem;
+  min-height: 4.5rem;
+  padding: 0.85rem 1rem;
+  text-decoration: none;
+}
+
+.conversation-list-link + .conversation-list-link {
+  border-top: 1px solid var(--line);
+}
+
+.conversation-list-link:hover,
+.conversation-list-link:focus-visible,
+.conversation-list-link[aria-current="page"] {
+  background: var(--surface-muted);
+}
+
+.conversation-list-link[aria-current="page"] {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.conversation-list-link span,
+.conversation-list-link small {
+  color: var(--text-muted);
+}
+
+.conversation-list-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-context-link,
+.mobile-thread-link,
+.mobile-assume-action {
+  display: none;
 }
 
 .conversation-thread {
@@ -1291,8 +1358,30 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .conversation-context {
-    grid-row: 1;
+  .conversation-list-panel {
+    display: none;
+  }
+
+  .mobile-context-link,
+  .mobile-thread-link,
+  .mobile-assume-action {
+    align-items: center;
+    display: inline-flex;
+    min-height: 2.75rem;
+  }
+
+  .mobile-assume-action .button {
+    min-height: 2.75rem;
+  }
+
+  .mobile-context-link {
+    align-self: stretch;
+    justify-content: center;
+  }
+
+  .mobile-conversation-view .conversation-context,
+  .mobile-context-view .conversation-thread {
+    display: none;
   }
 }
 

@@ -120,6 +120,21 @@ async function assume(
   });
 }
 
+async function pause(
+  client: SupabaseClient,
+  targetConversationId: string,
+  expectedVersion: number,
+  reason: string,
+) {
+  return client.rpc("pause_conversation", {
+    expected_version: expectedVersion,
+    pause_reason: reason,
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_conversation_id: targetConversationId,
+  });
+}
+
 async function returnToPedro(
   client: SupabaseClient,
   targetConversationId: string,
@@ -134,6 +149,53 @@ async function returnToPedro(
     target_automation_mode: mode,
     target_conversation_id: targetConversationId,
   });
+}
+
+async function createManagerFixture(label: string, whatsapp: string) {
+  const email = `inbox-${label}-${randomUUID().slice(0, 8)}@example.com`;
+  const identity = await createAuthenticatedClient(email);
+  const membershipId = randomUUID();
+  await insert("memberships", {
+    id: membershipId,
+    organization_id: organizationId,
+    role: "manager",
+    status: "active",
+    user_id: identity.userId,
+  });
+  await insert("membership_operations", {
+    membership_id: membershipId,
+    operation_id: operationId,
+    organization_id: organizationId,
+  });
+  await insert("membership_permissions", {
+    granted_by_user_id: ownerId,
+    membership_id: membershipId,
+    organization_id: organizationId,
+    permission: "manage_conversations",
+  });
+  await insert("staff_profiles", {
+    full_name: `Gestor ${label}`,
+    membership_id: membershipId,
+    organization_id: organizationId,
+    whatsapp,
+  });
+  return { client: identity.client, membershipId };
+}
+
+async function waitForMembershipOwnershipLock(membershipId: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const rows = await database<Array<{ acquired: boolean }>>`
+      select pg_try_advisory_xact_lock(
+        hashtextextended(
+          'membership-ownership:' || ${membershipId}::text,
+          0
+        )
+      ) as acquired
+    `;
+    if (!rows[0]!.acquired) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Conversation command did not acquire Membership lock");
 }
 
 test.beforeAll(async () => {
@@ -359,6 +421,21 @@ test("materializa inbound idempotente e prende a Conversa à origem", async () =
     provider_chat_id: "chat-primary",
   });
 
+  const inboundAudit = await database<Array<{ count: number }>>`
+    select count(*)::integer as count
+    from audit.audit_events
+    where action = 'message.inbound_received'
+      and target_id = (
+        select id
+        from public.messages
+        where conversation_id = ${conversationId}::uuid
+          and provider_message_id = 'message-primary'
+      )
+      and after_state ->> 'provider_message_id_hash' is not null
+      and after_state::text not like '%message-primary%'
+  `;
+  expect(inboundAudit[0]!.count).toBe(1);
+
   const inbox = await owner.rpc("get_inbox_list", {
     target_operation_id: operationId,
   });
@@ -375,7 +452,7 @@ test("materializa inbound idempotente e prende a Conversa à origem", async () =
   );
 });
 
-test("assumir usa versão e produção permanece fechada", async () => {
+test("Ownership versiona, pausa só Pedro e audita sem texto livre", async () => {
   const startingVersion = await version(conversationId);
   const assumed = await assume(owner, conversationId, startingVersion);
   expect(assumed.error).toBeNull();
@@ -405,6 +482,95 @@ test("assumir usa versão e produção permanece fechada", async () => {
   expect(returned.error).toBeNull();
   expect(returned.data).toEqual(
     expect.objectContaining({ ownership_type: "pedro", pending_return: false }),
+  );
+
+  const pauseInbound = await ingest(
+    "message-pause",
+    "chat-pause",
+    "lead-pause",
+  );
+  expect(pauseInbound.error).toBeNull();
+  const pauseTargetId = (pauseInbound.data as { conversation_id: string })
+    .conversation_id;
+  const pauseReason = "Revisar CPF 123.456.789-00 antes de continuar";
+  const paused = await pause(
+    owner,
+    pauseTargetId,
+    await version(pauseTargetId),
+    pauseReason,
+  );
+  expect(paused.error).toBeNull();
+  expect(paused.data).toEqual(
+    expect.objectContaining({
+      is_paused: true,
+      owner_membership_id: ownerMembershipId,
+      ownership_type: "human",
+    }),
+  );
+
+  const responseWhilePaused = await owner.rpc("send_human_message", {
+    command_id: randomUUID(),
+    expected_version: await version(pauseTargetId),
+    message_text: "O gestor continua respondendo com Pedro pausado.",
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_conversation_id: pauseTargetId,
+  });
+  expect(responseWhilePaused.error).toBeNull();
+
+  const pausedState = await database<
+    Array<{ is_paused: boolean; pause_reason: string }>
+  >`
+    select is_paused, pause_reason
+    from public.conversations
+    where id = ${pauseTargetId}::uuid
+  `;
+  expect(pausedState[0]).toEqual({
+    is_paused: true,
+    pause_reason: pauseReason,
+  });
+
+  const pauseAudit = await database<
+    Array<{ after_state: Record<string, unknown> }>
+  >`
+    select after_state
+    from audit.audit_events
+    where target_id = ${pauseTargetId}::uuid
+      and action = 'conversation.paused'
+  `;
+  expect(pauseAudit).toHaveLength(1);
+  expect(pauseAudit[0]!.after_state).toMatchObject({
+    operational_reason_recorded: true,
+    reason_code: "human_requested_pause",
+  });
+  expect(JSON.stringify(pauseAudit[0]!.after_state)).not.toContain(pauseReason);
+  expect(JSON.stringify(pauseAudit[0]!.after_state)).not.toContain(
+    "123.456.789-00",
+  );
+
+  const commandAudit = await database<
+    Array<{ action: string; count: number }>
+  >`
+    select action, count(*)::integer as count
+    from audit.audit_events
+    where (
+      target_id = ${conversationId}::uuid
+      and action in (
+        'conversation.assumed',
+        'conversation.returned_to_pedro'
+      )
+    ) or (
+      target_id = ${pauseTargetId}::uuid
+      and action = 'conversation.paused'
+    )
+    group by action
+  `;
+  expect(commandAudit).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ action: "conversation.assumed" }),
+      expect.objectContaining({ action: "conversation.paused" }),
+      expect.objectContaining({ action: "conversation.returned_to_pedro" }),
+    ]),
   );
 });
 
@@ -542,6 +708,59 @@ test("origem é imutável e uma segunda conexão não repina a primeira", async 
       { connection_id: secondConnectionId, id: secondConversationId },
     ]),
   );
+
+  const sharedPhone = "+55 11 98765-4321";
+  const concurrentIdentity = await Promise.all([
+    admin.rpc("ingest_simulated_inbound", {
+      normalized_event: inbound(
+        "message-phone-race-primary",
+        "chat-phone-race-primary",
+        "lead-phone-race-primary",
+        sharedPhone,
+      ),
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_connection_id: connectionId,
+    }),
+    admin.rpc("ingest_simulated_inbound", {
+      normalized_event: inbound(
+        "message-phone-race-secondary",
+        "chat-phone-race-secondary",
+        "lead-phone-race-secondary",
+        sharedPhone,
+      ),
+      request_correlation_id: randomUUID(),
+      request_trace_id: randomUUID(),
+      target_connection_id: secondConnectionId,
+    }),
+  ]);
+  expect(concurrentIdentity.every((item) => item.error === null)).toBe(true);
+  expect(
+    concurrentIdentity.map((item) => (item.data as { status: string }).status),
+  ).toEqual(["received", "received"]);
+
+  const canonicalIdentity = await database<
+    Array<{ contacts: number; identities: number; phones: number }>
+  >`
+    select
+      count(distinct identity.contact_id)::integer as contacts,
+      count(distinct identity.id)::integer as identities,
+      count(distinct phone.id)::integer as phones
+    from public.contact_phones as phone
+    join public.provider_identities as identity
+      on identity.contact_id = phone.contact_id
+    where phone.organization_id = ${organizationId}::uuid
+      and phone.e164 = '+5511987654321'
+      and identity.connection_id in (
+        ${connectionId}::uuid,
+        ${secondConnectionId}::uuid
+      )
+  `;
+  expect(canonicalIdentity[0]).toEqual({
+    contacts: 1,
+    identities: 2,
+    phones: 1,
+  });
 });
 
 test("conflito alias/telefone exige revisão sem auto-merge", async () => {
@@ -870,6 +1089,43 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
   expect(duplicate.error).toBeNull();
   expect(duplicate.data).toEqual(expect.objectContaining({ status: "duplicate" }));
 
+  async function replayStatus(client: SupabaseClient, messageText: string) {
+    const session = await client.auth.getSession();
+    expect(session.error).toBeNull();
+    const accessToken = session.data.session?.access_token;
+    expect(accessToken).toBeTruthy();
+    return fetch(
+      `${requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL")}/rest/v1/rpc/send_human_message`,
+      {
+        body: JSON.stringify({
+          command_id: commandId,
+          expected_version: expectedVersion,
+          message_text: messageText,
+          request_correlation_id: randomUUID(),
+          request_trace_id: randomUUID(),
+          target_conversation_id: conversationId,
+        }),
+        headers: {
+          apikey: requiredEnvironment("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      },
+    );
+  }
+
+  const divergentPayload = await replayStatus(
+    owner,
+    "Mesmo command_id com outro conteúdo",
+  );
+  expect(divergentPayload.status).toBe(409);
+  const divergentActor = await replayStatus(
+    manager,
+    "Resposta sintética idempotente",
+  );
+  expect(divergentActor.status).toBe(409);
+
   const counts = await database<Array<{ captures: number; messages: number }>>`
     select
       (
@@ -921,15 +1177,34 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
   });
 
   const secondCommand = randomUUID();
+  const exactBoundary = "x".repeat(12_000);
   const second = await owner.rpc("send_human_message", {
     command_id: secondCommand,
     expected_version: await version(conversationId),
-    message_text: "Outra resposta sintética",
+    message_text: exactBoundary,
     request_correlation_id: randomUUID(),
     request_trace_id: randomUUID(),
     target_conversation_id: conversationId,
   });
   expect(second.error).toBeNull();
+
+  const storedBoundary = await database<Array<{ body: string }>>`
+    select body
+    from public.messages
+    where conversation_id = ${conversationId}::uuid
+      and idempotency_key = ${secondCommand}::uuid
+  `;
+  expect(storedBoundary[0]!.body).toBe(exactBoundary);
+
+  const tooLong = await owner.rpc("send_human_message", {
+    command_id: randomUUID(),
+    expected_version: await version(conversationId),
+    message_text: "y".repeat(12_001),
+    request_correlation_id: randomUUID(),
+    request_trace_id: randomUUID(),
+    target_conversation_id: conversationId,
+  });
+  expect(tooLong.error?.code).toBe("22001");
 });
 
 test("desativar humano transfere Ownership e invalida devolução pendente", async () => {
@@ -990,11 +1265,122 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
       and action = 'conversation.pending_return_invalidated'
   `;
   expect(audit[0]!.count).toBe(1);
+
+  async function raceDeactivationAgainstCommand(
+    kind: "assume" | "pause",
+    whatsapp: string,
+  ) {
+    const raceManager = await createManagerFixture(
+      `race-${kind}`,
+      whatsapp,
+    );
+    const raceInbound = await ingest(
+      `message-deactivation-race-${kind}`,
+      `chat-deactivation-race-${kind}`,
+      `lead-deactivation-race-${kind}`,
+    );
+    expect(raceInbound.error).toBeNull();
+    const raceConversationId = (
+      raceInbound.data as { conversation_id: string }
+    ).conversation_id;
+    const expectedVersion = await version(raceConversationId);
+
+    let releaseRowLock!: () => void;
+    let confirmRowLock!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseRowLock = resolve;
+    });
+    const rowLocked = new Promise<void>((resolve) => {
+      confirmRowLock = resolve;
+    });
+    const blocker = database.begin(async (transaction) => {
+      await transaction`
+        select id
+        from public.conversations
+        where id = ${raceConversationId}::uuid
+        for update
+      `;
+      confirmRowLock();
+      await release;
+    });
+
+    await rowLocked;
+    const command =
+      kind === "assume"
+        ? assume(raceManager.client, raceConversationId, expectedVersion)
+        : pause(
+            raceManager.client,
+            raceConversationId,
+            expectedVersion,
+            "Revisão concorrente",
+          );
+
+    try {
+      await waitForMembershipOwnershipLock(raceManager.membershipId);
+      const deactivation = admin.rpc(
+        "deactivate_membership_after_reauthentication",
+        {
+          actor_user_id: ownerId,
+          request_correlation_id: randomUUID(),
+          request_trace_id: randomUUID(),
+          target_membership_id: raceManager.membershipId,
+          target_operation_id: operationId,
+        },
+      );
+      releaseRowLock();
+      await blocker;
+      const [commandResult, deactivationResult] = await Promise.all([
+        command,
+        deactivation,
+      ]);
+      expect(commandResult.error).toBeNull();
+      expect(deactivationResult.error).toBeNull();
+    } finally {
+      releaseRowLock();
+      await blocker.catch(() => undefined);
+    }
+
+    const finalOwner = await database<
+      Array<{
+        assigned_membership_id: string;
+        membership_status: string;
+        ownership_type: string;
+      }>
+    >`
+      select
+        conversation.assigned_membership_id,
+        membership.status as membership_status,
+        conversation.ownership_type
+      from public.conversations as conversation
+      join public.memberships as membership
+        on membership.id = conversation.assigned_membership_id
+      where conversation.id = ${raceConversationId}::uuid
+    `;
+    expect(finalOwner[0]).toEqual({
+      assigned_membership_id: ownerMembershipId,
+      membership_status: "active",
+      ownership_type: "human",
+    });
+
+    const rejectedInactiveOwner = await database`
+      update public.conversations
+      set
+        assigned_membership_id = ${raceManager.membershipId}::uuid,
+        ownership_type = 'human',
+        version = version + 1
+      where id = ${raceConversationId}::uuid
+    `.catch((error: unknown) => error);
+    expect(rejectedInactiveOwner).toBeInstanceOf(Error);
+  }
+
+  await raceDeactivationAgainstCommand("assume", "+5511999990031");
+  await raceDeactivationAgainstCommand("pause", "+5511999990032");
 });
 
 test("Inbox renderiza lista, mensagens, contexto e Ownership no desktop e celular", async ({
   page,
 }) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto("/entrar?next=%2Fapp%2Fatendimentos");
   await page.getByLabel("E-mail").fill(ownerEmail);
   await page.getByLabel("Senha", { exact: true }).fill(password);
@@ -1018,13 +1404,81 @@ test("Inbox renderiza lista, mensagens, contexto e Ownership no desktop e celula
   await expect(page.getByRole("heading", { name: "Ownership" })).toBeVisible();
   await expect(page.getByText("Conexão fixa")).toBeVisible();
 
+  const desktopList = page.getByLabel("Conversas abertas");
+  const thread = page.getByLabel("Mensagens");
+  const context = page.getByLabel("Contexto operacional");
+  await expect(desktopList).toBeVisible();
+  await expect(thread).toBeVisible();
+  await expect(context).toBeVisible();
+  const [listBox, threadBox, contextBox] = await Promise.all([
+    desktopList.boundingBox(),
+    thread.boundingBox(),
+    context.boundingBox(),
+  ]);
+  expect(listBox).not.toBeNull();
+  expect(threadBox).not.toBeNull();
+  expect(contextBox).not.toBeNull();
+  expect(listBox!.x).toBeLessThan(threadBox!.x);
+  expect(threadBox!.x).toBeLessThan(contextBox!.x);
+  const threadPrecedesContext = await page.evaluate(() => {
+    const threadElement = document.querySelector(".conversation-thread");
+    const contextElement = document.querySelector(".conversation-context");
+    return Boolean(
+      threadElement &&
+        contextElement &&
+        threadElement.compareDocumentPosition(contextElement) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+  expect(threadPrecedesContext).toBe(true);
+
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/app/atendimentos");
   await expect(primaryLink).toBeVisible();
   await primaryLink.click();
   await expect(page.getByText("Mensagem message-primary")).toBeVisible();
+  await expect(thread).toBeVisible();
+  await expect(context).toBeHidden();
+  await expect(page.getByText(/Ownership:/)).toBeVisible();
+  await page
+    .getByRole("link", { name: "Ver contexto e Ownership" })
+    .click();
+  await expect(page).toHaveURL(/painel=contexto/);
+  await expect(thread).toBeHidden();
+  await expect(context).toBeVisible();
   await expect(page.getByText("Contexto para Pedro")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ownership" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Voltar para conversa" }),
+  ).toBeVisible();
+
+  const pausedHumanConversation = await database<Array<{ id: string }>>`
+    select id
+    from public.conversations
+    where operation_id = ${operationId}::uuid
+      and ownership_type = 'human'
+      and assigned_membership_id = ${ownerMembershipId}::uuid
+      and is_paused
+      and status in ('active', 'sleeping')
+    order by updated_at desc
+    limit 1
+  `;
+  await page.goto(`/app/atendimentos/${pausedHumanConversation[0]!.id}`);
+  await expect(page.getByLabel("Responder como humano")).toBeVisible();
+
+  const pedroConversation = await database<Array<{ id: string }>>`
+    select id
+    from public.conversations
+    where operation_id = ${operationId}::uuid
+      and ownership_type = 'pedro'
+      and status in ('active', 'sleeping')
+    order by updated_at desc
+    limit 1
+  `;
+  await page.goto(`/app/atendimentos/${pedroConversation[0]!.id}`);
+  await expect(
+    page.getByRole("button", { name: "Assumir", exact: true }),
+  ).toBeVisible();
 });
 
 test("route HTTP real usa apenas token sintético da Preview", async ({

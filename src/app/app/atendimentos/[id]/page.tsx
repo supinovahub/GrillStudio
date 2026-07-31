@@ -11,7 +11,7 @@ import {
   returnConversationAction,
   sendHumanMessageAction,
 } from "@/lib/inbox/actions";
-import { getConversationDetail } from "@/lib/inbox/queries";
+import { getConversationDetail, getInboxList } from "@/lib/inbox/queries";
 import { pipelineStageLabels } from "@/lib/leads/types";
 import { getMemberWorkspace } from "@/lib/operation/shell";
 
@@ -19,7 +19,7 @@ export const metadata: Metadata = { title: "Conversa" };
 
 type PageProps = {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ resultado?: string }>;
+  searchParams: Promise<{ painel?: string; resultado?: string }>;
 };
 
 const statusMessages: Record<string, string> = {
@@ -62,9 +62,13 @@ export default async function ConversationPage({
     redirect("/sem-permissao");
   }
 
-  const conversation = await getConversationDetail(id);
+  const [conversation, conversations] = await Promise.all([
+    getConversationDetail(id),
+    getInboxList(workspace.operation_id),
+  ]);
   if (!conversation) notFound();
   const returnTo = `/app/atendimentos/${conversation.id}`;
+  const showMobileContext = query.painel === "contexto";
   const statusMessage = query.resultado
     ? statusMessages[query.resultado]
     : null;
@@ -104,11 +108,72 @@ export default async function ConversationPage({
             {conversation.pending_return ? (
               <span>Devolução pendente</span>
             ) : null}
+            {conversation.ownership_type === "pedro" ? (
+              <form
+                action={assumeConversationAction}
+                className="mobile-assume-action"
+              >
+                <input
+                  name="conversation_id"
+                  type="hidden"
+                  value={conversation.id}
+                />
+                <input
+                  name="expected_version"
+                  type="hidden"
+                  value={conversation.version}
+                />
+                <input name="return_to" type="hidden" value={returnTo} />
+                <button className="button button-primary" type="submit">
+                  Assumir
+                </button>
+              </form>
+            ) : null}
           </div>
         </section>
 
-        <div className="conversation-layout">
+        <div
+          className={`conversation-layout ${
+            showMobileContext
+              ? "mobile-context-view"
+              : "mobile-conversation-view"
+          }`}
+        >
+          <aside
+            aria-label="Conversas abertas"
+            className="conversation-list-panel"
+          >
+            <div className="conversation-panel-heading">
+              <p className="eyebrow">Atendimentos</p>
+              <strong>{conversations.length} abertas</strong>
+            </div>
+            <nav aria-label="Selecionar Conversa">
+              {conversations.map((item) => (
+                <Link
+                  aria-current={item.id === conversation.id ? "page" : undefined}
+                  className="conversation-list-link"
+                  href={`/app/atendimentos/${item.id}`}
+                  key={item.id}
+                >
+                  <strong>{item.display_name || "Nome não informado"}</strong>
+                  <span>{item.last_message || "Sem prévia de texto"}</span>
+                  <small>
+                    {item.ownership_type === "pedro"
+                      ? "Pedro"
+                      : item.assigned_name || "Humano"}
+                  </small>
+                </Link>
+              ))}
+            </nav>
+          </aside>
+
           <section className="conversation-thread" aria-label="Mensagens">
+            <Link
+              className="button mobile-context-link"
+              href={`${returnTo}?painel=contexto`}
+            >
+              Ver contexto e Ownership
+            </Link>
             {conversation.messages.map((message) => (
               <article
                 className={`message-bubble ${message.direction}`}
@@ -128,7 +193,7 @@ export default async function ConversationPage({
               <p className="empty-copy">Nenhuma mensagem nesta Conversa.</p>
             ) : null}
 
-            {conversation.is_owned_by_actor && !conversation.is_paused ? (
+            {conversation.is_owned_by_actor ? (
               <form action={sendHumanMessageAction} className="message-composer">
                 <input name="command_id" type="hidden" value={randomUUID()} />
                 <input
@@ -145,6 +210,7 @@ export default async function ConversationPage({
                 <label htmlFor="message-text">Responder como humano</label>
                 <textarea
                   id="message-text"
+                  maxLength={12_000}
                   name="message_text"
                   placeholder="Esta resposta será capturada apenas pelo simulador."
                   required
@@ -157,7 +223,13 @@ export default async function ConversationPage({
             ) : null}
           </section>
 
-          <aside className="conversation-context">
+          <aside
+            aria-label="Contexto operacional"
+            className="conversation-context"
+          >
+            <Link className="text-link mobile-thread-link" href={returnTo}>
+              ← Voltar para conversa
+            </Link>
             <section className="lead-panel">
               <p className="eyebrow">Contexto</p>
               <h2>Oportunidade</h2>
@@ -240,6 +312,7 @@ export default async function ConversationPage({
                   <label htmlFor="pause-reason">Motivo da pausa</label>
                   <input
                     id="pause-reason"
+                    maxLength={500}
                     name="pause_reason"
                     placeholder="Ex.: gestor revisando o caso"
                     required

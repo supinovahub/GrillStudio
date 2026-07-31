@@ -8,7 +8,8 @@
 - `provider_identities` e `provider_identity_aliases` preservam IDs opacos e
   históricos de alias por conexão. Telefone é opcional; conflito entre alias e
   telefone ou mais de uma identidade/Oportunidade compatível não provoca
-  fusão automática e cria revisão privada.
+  fusão automática e cria revisão privada. Materialização concorrente do mesmo
+  telefone em conexões diferentes é serializada por Imobiliária e E.164.
 - `messages` é o histórico canônico da Conversa. Inbound, materialização de
   Contato/Oportunidade/Conversa e auditoria são gravados na mesma transação.
 - A origem da Conversa é o par imutável `connection_id + provider_chat_id`.
@@ -24,7 +25,8 @@
 `return_conversation_to_pedro` autorizam o ator pela Operação, bloqueiam a
 linha, exigem `expected_version` e registram antes/depois na auditoria.
 
-Pausa e Ownership são estados separados. Assumir não altera
+Pausa e Ownership são estados separados. A pausa suspende Pedro, mas o humano
+que assumiu continua autorizado a responder. Assumir não altera
 `automation_mode`; devolver exige a ação explícita `resume_service` e um modo
 servido pelo backend. `production` só aparece e só é aceito quando a Operação
 está habilitada e sem pausa sistêmica.
@@ -35,12 +37,18 @@ humana ou troca/desativação do responsável invalida a devolução pendente e
 gera auditoria. Nesta fatia, o seam transacional de capacidade aceita menos de
 30 Conversas ativas do Pedro; o controle completo pertence a T07.
 
+Comandos e desativação de Membro compartilham um lock transacional antes do
+lock da Conversa. Triggers de constraint diferidos também impedem que uma
+Conversa aberta confirme Ownership humano em Membro inativo.
+
 ## Idempotência, transporte e segurança
 
 - Inbound deduplica por `(connection_id, provider_message_id)`.
-- Outbound humano deduplica por `(conversation_id, command_id)`. O formulário
-  cria um único `command_id` estável e a captura sintética nunca contém
-  destinatário nem tenta egress.
+- Outbound humano deduplica por `(conversation_id, command_id)`. Replay só é
+  idempotente quando ator e conteúdo são idênticos; divergência retorna
+  conflito. Texto acima de 12 mil caracteres é recusado sem truncamento. O
+  formulário cria um único `command_id` estável e a captura sintética nunca
+  contém destinatário nem tenta egress.
 - `POST /api/simulator/whatsapp/inbound` existe somente em Preview, valida um
   bearer token sintético com comparação constante, exige JSON e limita o
   corpo real a 64 KiB independentemente de `Content-Length`. Fora de Preview
@@ -58,9 +66,10 @@ gera auditoria. Nesta fatia, o seam transacional de capacidade aceita menos de
 
 - `/app/atendimentos`: lista as Conversas abertas da Operação com última
   mensagem, origem, etapa, Ownership, modo, pendência e revisão.
-- `/app/atendimentos/[id]`: mostra histórico, contexto da Oportunidade,
-  conexão e Ownership; oferece apenas as ações autorizadas pelo servidor.
-- Lista e detalhe são funcionais em desktop e em viewport móvel de 390 px.
+- `/app/atendimentos/[id]`: no desktop mostra lista, conversa e contexto em
+  três painéis; oferece apenas as ações autorizadas pelo servidor.
+- No mobile, lista, conversa e contexto são passos separados. A conversa vem
+  antes do contexto na ordem de leitura e preserva Ownership no cabeçalho.
 
 ## Matriz de verificação
 
@@ -68,11 +77,14 @@ gera auditoria. Nesta fatia, o seam transacional de capacidade aceita menos de
 |---|---|
 | Inbound idempotente, origem fixa e materialização canônica | Black-box |
 | Assunção versionada, concorrência com um vencedor e gate de produção | Black-box |
+| Desativação concorrente com assumir/pausar sem Membro inativo como owner | Black-box |
 | RLS positiva/negativa, cross-Operation e escrita direta recusada | Black-box |
 | Alias/telefone ambíguos sem auto-merge | Black-box |
+| Mesmo E.164 concorrente em duas conexões materializa um Contato | Black-box |
 | Retorno de `lost` pelo helper T04 e `purchased` fechado com nova Oportunidade | Black-box |
 | Pin manual por CAS preservando responsável humano | Black-box |
 | Capacidade cheia, devolução pendente e cancelamento por mensagem humana | Black-box |
+| Replay divergente em ator/conteúdo, limite exato e excesso de 12 mil | Black-box |
 | Desativação transfere Ownership e invalida pendência | Black-box |
 | Inbox desktop/móvel e rota HTTP sintética real | Black-box |
 | Normalização do contrato, autenticação e limite byte a byte da rota | Unitário |
