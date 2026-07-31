@@ -43,10 +43,13 @@ function run(command, args, options = {}) {
 
   if (result.status !== 0) {
     const detail = options.sensitive
-      ? result.stderr
+      ? ""
       : [result.stdout, result.stderr].filter(Boolean).join("\n");
+    const invocation = options.sensitive
+      ? command
+      : `${command} ${args.join(" ")}`;
     throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status}${
+      `${invocation} failed with ${result.status}${
         detail ? `\n${detail}` : ""
       }`,
     );
@@ -482,25 +485,14 @@ function setAgentStatus(repoRoot, sha, state, description) {
   );
 }
 
-async function runCodex(
+async function runCodexWithPrompt(
   repoRoot,
   worktree,
   issue,
   model,
   previewEnvironment,
+  prompt,
 ) {
-  const prompt = [
-    `Use /implement ${issue.url}.`,
-    "Work only on this ticket and follow AGENTS.md, CONTEXT.md and the accepted ADRs.",
-    "The branch and draft PR already exist. Do not merge or close the PR.",
-    "Use only the Supabase Preview Branch corresponding to this PR.",
-    "Never use the main Supabase project and never start Supabase locally.",
-    "Keep providers simulated or allowlisted. Do not invent credentials or gates.",
-    "Run the required checks, use /code-review origin/main and commit all changes.",
-    "Commit in the current worktree; do not create or push from an alternate clone.",
-    "If a required Preview Branch, credential, provider asset or human gate is unavailable, stop safely and report the exact blocker without weakening acceptance criteria.",
-  ].join("\n");
-
   const child = spawn(
     "codex",
     [
@@ -535,6 +527,62 @@ async function runCodex(
   if (exitCode !== 0) {
     throw new Error(`Codex exited with ${exitCode} for issue #${issue.number}`);
   }
+}
+
+async function runCodex(
+  repoRoot,
+  worktree,
+  issue,
+  model,
+  previewEnvironment,
+) {
+  const prompt = [
+    `Use /implement ${issue.url}.`,
+    "Work only on this ticket and follow AGENTS.md, CONTEXT.md and the accepted ADRs.",
+    "The branch and draft PR already exist. Do not merge or close the PR.",
+    "Use only the Supabase Preview Branch corresponding to this PR.",
+    "Never use the main Supabase project and never start Supabase locally.",
+    "Keep providers simulated or allowlisted. Do not invent credentials or gates.",
+    "Run the required checks, use /code-review origin/main and commit all changes.",
+    "Commit in the current worktree; do not create or push from an alternate clone.",
+    "If a required Preview Branch, credential, provider asset or human gate is unavailable, stop safely and report the exact blocker without weakening acceptance criteria.",
+  ].join("\n");
+
+  await runCodexWithPrompt(
+    repoRoot,
+    worktree,
+    issue,
+    model,
+    previewEnvironment,
+    prompt,
+  );
+}
+
+async function runCodexFinalizer(
+  repoRoot,
+  worktree,
+  issue,
+  model,
+  previewEnvironment,
+) {
+  const prompt = [
+    `Finalize a implementação já iniciada para ${issue.url}.`,
+    "Esta é uma única passagem de recuperação: preserve o trabalho existente, inspecione o diff e conclua somente este ticket.",
+    "Siga AGENTS.md, CONTEXT.md e os ADRs aceitos. Não reduza critérios de aceite.",
+    "O branch e o draft PR já existem. Não faça merge, não feche o PR e não trabalhe em outro clone.",
+    "Use somente a Supabase Preview Branch deste PR; nunca use o projeto principal nem Supabase local.",
+    "Resolva pendências evidentes, execute os checks locais possíveis, revise o diff e faça commit de todo o trabalho concluído.",
+    "Se houver um bloqueio humano ou externo real, deixe o worktree intacto e encerre com a causa exata.",
+  ].join("\n");
+
+  await runCodexWithPrompt(
+    repoRoot,
+    worktree,
+    issue,
+    model,
+    previewEnvironment,
+    prompt,
+  );
 }
 
 function currentPr(repoRoot, branch) {
@@ -760,19 +808,34 @@ function cleanupFailedTicket({
   prNumber,
   worktreeCreated,
   issueAssigned,
+  failure,
 }) {
+  const failureMessage =
+    failure instanceof Error ? failure.message : String(failure);
+  const safeFailureMessage = failureMessage
+    .replaceAll("```", "'''")
+    .slice(0, 3000);
+
   if (prNumber) {
     try {
       run(
         "gh",
         [
           "pr",
-          "close",
+          "comment",
           String(prNumber),
           "--repo",
           REPOSITORY,
-          "--comment",
-          "Automação pausada com falha fechada. A Preview Branch foi encerrada; consulte os logs locais antes de retomar.",
+          "--body",
+          [
+            "Automação pausada e encaminhada para intervenção humana.",
+            "",
+            "O PR, o branch, a Preview Branch e o worktree foram preservados. Nenhum merge será tentado até a correção.",
+            "",
+            "```text",
+            safeFailureMessage,
+            "```",
+          ].join("\n"),
         ],
         { cwd: repoRoot },
       );
@@ -791,84 +854,38 @@ function cleanupFailedTicket({
           String(issueNumber),
           "--repo",
           REPOSITORY,
-          "--remove-assignee",
-          "@me",
+          "--add-label",
+          "ready-for-human",
         ],
         { cwd: repoRoot },
       );
     } catch (error) {
       console.error(
-        `Could not unassign issue #${issueNumber}: ${error.message}`,
+        `Could not mark issue #${issueNumber} for human review: ${error.message}`,
       );
     }
   }
 
-  if (!worktreeCreated) {
-    return;
-  }
-
-  try {
-    let status = run("git", ["status", "--porcelain"], {
-      cwd: worktree,
-      capture: true,
-    });
-    let commitCount = Number(
-      run("git", ["rev-list", "--count", "origin/main..HEAD"], {
+  if (prNumber && worktreeCreated) {
+    try {
+      const sha = run("git", ["rev-parse", "HEAD"], {
         cwd: worktree,
         capture: true,
-      }),
-    );
-
-    let recoveryBundle;
-    if (status || commitCount > 1) {
-      if (status) {
-        run("git", ["add", "-A"], { cwd: worktree });
-        run(
-          "git",
-          [
-            "commit",
-            "--no-verify",
-            "-m",
-            `Preserve failed automation #${issueNumber}`,
-          ],
-          { cwd: worktree },
-        );
-        status = "";
-        commitCount += 1;
-      }
-
-      const failureDirectory = path.join(repoRoot, ".orchestrator", "failures");
-      mkdirSync(failureDirectory, { recursive: true });
-      recoveryBundle = path.join(
-        failureDirectory,
-        `issue-${issueNumber}-${Date.now()}.bundle`,
-      );
-      run("git", ["bundle", "create", recoveryBundle, branch], {
-        cwd: repoRoot,
       });
-      run("git", ["bundle", "verify", recoveryBundle], { cwd: repoRoot });
-    }
-
-    if (!status) {
-      run("git", ["worktree", "remove", worktree], { cwd: repoRoot });
-      const remoteBranch = run(
-        "git",
-        ["ls-remote", "--heads", "origin", branch],
-        { cwd: repoRoot, capture: true },
+      setAgentStatus(
+        repoRoot,
+        sha,
+        "failure",
+        "Automation paused for human intervention",
       );
-      if (remoteBranch) {
-        run("git", ["push", "origin", "--delete", branch], { cwd: repoRoot });
-      }
-      run("git", ["branch", "--delete", "--force", branch], { cwd: repoRoot });
-      if (recoveryBundle) {
-        console.error(`Failure preserved in bundle: ${recoveryBundle}`);
-      }
-    } else {
-      console.error(`Failure worktree preserved for recovery: ${worktree}`);
+    } catch (error) {
+      console.error(`Could not mark the failed head: ${error.message}`);
     }
-  } catch (error) {
-    console.error(`Could not reconcile failed worktree: ${error.message}`);
   }
+
+  console.error(
+    `Failure preserved: branch=${branch} worktree=${worktree}`,
+  );
 }
 
 async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
@@ -946,25 +963,51 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
       previewEnvironment,
     );
 
-    const status = run("git", ["status", "--porcelain"], {
+    let status = run("git", ["status", "--porcelain"], {
       cwd: worktree,
       capture: true,
     });
-    if (status) {
-      throw new Error(
-        `Agent left uncommitted changes for #${issue.number}:\n${status}`,
-      );
-    }
-
-    const commitCount = Number(
+    let commitCount = Number(
       run("git", ["rev-list", "--count", "origin/main..HEAD"], {
         cwd: worktree,
         capture: true,
       }),
     );
+
+    if (status || commitCount < 2) {
+      console.error(
+        `Issue #${issue.number} needs a finalizer pass: dirty=${Boolean(
+          status,
+        )} commits=${commitCount}`,
+      );
+      await runCodexFinalizer(
+        repoRoot,
+        worktree,
+        issue,
+        model,
+        previewEnvironment,
+      );
+      status = run("git", ["status", "--porcelain"], {
+        cwd: worktree,
+        capture: true,
+      });
+      commitCount = Number(
+        run("git", ["rev-list", "--count", "origin/main..HEAD"], {
+          cwd: worktree,
+          capture: true,
+        }),
+      );
+    }
+
+    if (status) {
+      throw new Error(
+        `Agent left uncommitted changes after the finalizer pass for #${issue.number}:\n${status}`,
+      );
+    }
+
     if (commitCount < 2) {
       throw new Error(
-        `Agent produced no implementation commit for #${issue.number}`,
+        `Agent produced no implementation commit after the finalizer pass for #${issue.number}`,
       );
     }
 
@@ -1018,6 +1061,7 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
       prNumber,
       worktreeCreated,
       issueAssigned,
+      failure: error,
     });
     throw error;
   }
