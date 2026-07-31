@@ -5,31 +5,13 @@ import { redirect } from "next/navigation";
 
 import { getRequestContext } from "@/lib/auth/context";
 import { isPreviewAuthEmailAllowed } from "@/lib/auth/email-policy";
-import { safeInternalPath } from "@/lib/auth/redirects";
+import { appBaseUrl, safeInternalPath } from "@/lib/auth/redirects";
 import { writeLog } from "@/lib/observability";
 import { createClient } from "@/lib/supabase/server";
 
 function field(formData: FormData, name: string): string {
   const value = formData.get(name);
   return typeof value === "string" ? value.trim() : "";
-}
-
-function appBaseUrl(): string {
-  const value = process.env.APP_BASE_URL;
-  if (!value) {
-    throw new Error("APP_BASE_URL is required for Auth email redirects");
-  }
-
-  const url = new URL(value);
-  const isLocalHttp =
-    url.protocol === "http:" &&
-    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-
-  if (url.protocol !== "https:" && !isLocalHttp) {
-    throw new Error("APP_BASE_URL must use HTTPS outside localhost");
-  }
-
-  return url.origin;
 }
 
 export async function signInAction(formData: FormData) {

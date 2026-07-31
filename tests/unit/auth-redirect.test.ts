@@ -1,6 +1,36 @@
 import { describe, expect, it } from "vitest";
 
-import { safeInternalPath } from "@/lib/auth/redirects";
+import { appBaseUrl, safeInternalPath } from "@/lib/auth/redirects";
+
+describe("appBaseUrl", () => {
+  it("uses the configured canonical origin for Auth redirects", () => {
+    const previous = process.env.APP_BASE_URL;
+    process.env.APP_BASE_URL = "http://127.0.0.1:3000/path";
+
+    expect(appBaseUrl()).toBe("http://127.0.0.1:3000");
+
+    if (previous === undefined) {
+      delete process.env.APP_BASE_URL;
+    } else {
+      process.env.APP_BASE_URL = previous;
+    }
+  });
+
+  it("requires HTTPS outside local development", () => {
+    const previous = process.env.APP_BASE_URL;
+    process.env.APP_BASE_URL = "http://preview.example.com";
+
+    expect(() => appBaseUrl()).toThrow(
+      "APP_BASE_URL must use HTTPS outside localhost",
+    );
+
+    if (previous === undefined) {
+      delete process.env.APP_BASE_URL;
+    } else {
+      process.env.APP_BASE_URL = previous;
+    }
+  });
+});
 
 describe("safeInternalPath", () => {
   it.each([

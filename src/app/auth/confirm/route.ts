@@ -1,7 +1,7 @@
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { type NextRequest, NextResponse } from "next/server";
 
-import { safeInternalPath } from "@/lib/auth/redirects";
+import { appBaseUrl, safeInternalPath } from "@/lib/auth/redirects";
 import { createClient } from "@/lib/supabase/server";
 
 const allowedTypes = new Set<EmailOtpType>([
@@ -23,16 +23,17 @@ export async function GET(request: NextRequest) {
     rawType &&
     allowedTypes.has(rawType as EmailOtpType)
   ) {
-    const supabase = await createClient();
+    const response = NextResponse.redirect(new URL(next, appBaseUrl()));
+    const supabase = await createClient(response);
     const { error } = await supabase.auth.verifyOtp({
       token_hash: tokenHash,
       type: rawType as EmailOtpType,
     });
 
     if (!error) {
-      return NextResponse.redirect(new URL(next, request.url));
+      return response;
     }
   }
 
-  return NextResponse.redirect(new URL("/entrar?erro=link", request.url));
+  return NextResponse.redirect(new URL("/entrar?erro=link", appBaseUrl()));
 }

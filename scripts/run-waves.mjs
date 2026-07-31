@@ -482,7 +482,13 @@ function setAgentStatus(repoRoot, sha, state, description) {
   );
 }
 
-async function runCodex(worktree, issue, model, previewEnvironment) {
+async function runCodex(
+  repoRoot,
+  worktree,
+  issue,
+  model,
+  previewEnvironment,
+) {
   const prompt = [
     `Use /implement ${issue.url}.`,
     "Work only on this ticket and follow AGENTS.md, CONTEXT.md and the accepted ADRs.",
@@ -491,6 +497,7 @@ async function runCodex(worktree, issue, model, previewEnvironment) {
     "Never use the main Supabase project and never start Supabase locally.",
     "Keep providers simulated or allowlisted. Do not invent credentials or gates.",
     "Run the required checks, use /code-review origin/main and commit all changes.",
+    "Commit in the current worktree; do not create or push from an alternate clone.",
     "If a required Preview Branch, credential, provider asset or human gate is unavailable, stop safely and report the exact blocker without weakening acceptance criteria.",
   ].join("\n");
 
@@ -509,6 +516,8 @@ async function runCodex(worktree, issue, model, previewEnvironment) {
       "sandbox_workspace_write.network_access=true",
       "--cd",
       worktree,
+      "--add-dir",
+      repoRoot,
       prompt,
     ],
     {
@@ -929,7 +938,13 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
       branch,
       prNumber,
     );
-    await runCodex(worktree, issue, model, previewEnvironment);
+    await runCodex(
+      repoRoot,
+      worktree,
+      issue,
+      model,
+      previewEnvironment,
+    );
 
     const status = run("git", ["status", "--porcelain"], {
       cwd: worktree,

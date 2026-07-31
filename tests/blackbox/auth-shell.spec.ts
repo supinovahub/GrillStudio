@@ -784,6 +784,7 @@ test("allows the Dono to contain Pedro and manage sessions", async ({ page }) =>
     .from("system_pauses")
     .select("origin, reason, status")
     .eq("operation_id", ownerOperationId)
+    .eq("status", "active")
     .single();
   expect(pause.error).toBeNull();
   expect(pause.data).toEqual({

@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { safeInternalPath } from "@/lib/auth/redirects";
+import { appBaseUrl, safeInternalPath } from "@/lib/auth/redirects";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: NextRequest) {
@@ -8,13 +8,14 @@ export async function GET(request: NextRequest) {
   const next = safeInternalPath(request.nextUrl.searchParams.get("next"));
 
   if (code) {
-    const supabase = await createClient();
+    const response = NextResponse.redirect(new URL(next, appBaseUrl()));
+    const supabase = await createClient(response);
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!error) {
-      return NextResponse.redirect(new URL(next, request.url));
+      return response;
     }
   }
 
-  return NextResponse.redirect(new URL("/entrar?erro=link", request.url));
+  return NextResponse.redirect(new URL("/entrar?erro=link", appBaseUrl()));
 }
