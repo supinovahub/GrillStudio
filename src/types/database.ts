@@ -1844,6 +1844,15 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      assume_conversation: {
+        Args: {
+          expected_version: number
+          request_correlation_id: string
+          request_trace_id: string
+          target_conversation_id: string
+        }
+        Returns: Json
+      }
       activate_global_pause: {
         Args: {
           request_correlation_id: string
@@ -1907,6 +1916,37 @@ export type Database = {
           status: string
           token: string
         }[]
+      }
+      get_conversation_detail: {
+        Args: {
+          target_conversation_id: string
+        }
+        Returns: Json
+      }
+      get_inbox_list: {
+        Args: {
+          target_operation_id: string
+        }
+        Returns: Json
+      }
+      ingest_simulated_inbound: {
+        Args: {
+          normalized_event: Json
+          request_correlation_id: string
+          request_trace_id: string
+          target_connection_id: string
+        }
+        Returns: Json
+      }
+      pause_conversation: {
+        Args: {
+          expected_version: number
+          pause_reason: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_conversation_id: string
+        }
+        Returns: Json
       }
       create_individual_invitation: {
         Args: {
@@ -2089,6 +2129,17 @@ export type Database = {
         }
         Returns: string
       }
+      return_conversation_to_pedro: {
+        Args: {
+          expected_version: number
+          request_correlation_id: string
+          request_trace_id: string
+          return_action: string
+          target_automation_mode: string
+          target_conversation_id: string
+        }
+        Returns: Json
+      }
       reserve_invitation_registration: {
         Args: {
           registration_email: string
@@ -2149,6 +2200,17 @@ export type Database = {
           status: string
           token: string
         }[]
+      }
+      send_human_message: {
+        Args: {
+          command_id: string
+          expected_version: number
+          message_text: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_conversation_id: string
+        }
+        Returns: Json
       }
       transition_opportunity: {
         Args: {
