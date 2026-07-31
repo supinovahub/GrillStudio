@@ -951,7 +951,7 @@ test("desativar humano transfere Ownership e invalida devolução pendente", asy
   expect(pending.error).toBeNull();
   expect(pending.data).toEqual(expect.objectContaining({ pending_return: true }));
 
-  const deactivated = await owner.rpc(
+  const deactivated = await admin.rpc(
     "deactivate_membership_after_reauthentication",
     {
       actor_user_id: ownerId,

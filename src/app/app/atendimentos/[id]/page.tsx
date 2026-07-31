@@ -55,7 +55,10 @@ export default async function ConversationPage({
     Promise.resolve(getPreviewEnvironment()),
   ]);
   if (!workspace) redirect("/aguardando-aprovacao");
-  if (!workspace.member_permissions.includes("manage_conversations")) {
+  if (
+    !workspace.member_roles.includes("owner") &&
+    !workspace.member_permissions.includes("manage_conversations")
+  ) {
     redirect("/sem-permissao");
   }
 
