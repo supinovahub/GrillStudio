@@ -28,6 +28,9 @@ enabled = true
 [auth]
 enabled = true
 
+[auth.sessions]
+inactivity_timeout = "720h"
+
 [auth.email]
 enable_signup = true
 enable_confirmations = true

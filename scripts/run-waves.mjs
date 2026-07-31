@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -242,8 +242,14 @@ function parseEnvironment(output) {
   return environment;
 }
 
-function resolvePreviewEnvironment(worktree, branch) {
-  const managementEnvironment = environmentWithNode(process.env);
+function resolvePreviewEnvironment(worktree, branch, prNumber) {
+  const supabaseHome = path.join(worktree, ".orchestrator", "supabase-cli");
+  mkdirSync(supabaseHome, { recursive: true });
+  const managementEnvironment = {
+    ...environmentWithNode(process.env),
+    SUPABASE_HOME: supabaseHome,
+    SUPABASE_TELEMETRY_DISABLED: "1",
+  };
   const cleanEnvironment = environmentWithNode(withoutSupabaseCredentials());
   const output = run(
     "pnpm",
@@ -277,8 +283,8 @@ function resolvePreviewEnvironment(worktree, branch) {
     branchEnvironment.SUPABASE_SERVICE_ROLE_KEY ??
     branchEnvironment.SERVICE_ROLE_KEY;
   const databaseUrl =
-    branchEnvironment.POSTGRES_URL_NON_POOLING ??
-    branchEnvironment.POSTGRES_URL;
+    branchEnvironment.POSTGRES_URL ??
+    branchEnvironment.POSTGRES_URL_NON_POOLING;
 
   if (!supabaseUrl || !publicKey || !serviceRoleKey || !databaseUrl) {
     throw new Error(
@@ -288,17 +294,38 @@ function resolvePreviewEnvironment(worktree, branch) {
   if (supabaseUrl.includes(MAIN_PROJECT_REF)) {
     throw new Error(`Preview Branch ${branch} resolved to the main project`);
   }
+  const previewProjectRef = new URL(supabaseUrl).hostname.split(".")[0];
+  if (!/^[a-z0-9]{20}$/.test(previewProjectRef)) {
+    throw new Error(`Preview Branch ${branch} returned an invalid project ref`);
+  }
+  if (!Number.isInteger(prNumber) || prNumber < 1) {
+    throw new Error(`Preview Branch ${branch} is missing its pull request`);
+  }
 
   return {
     ...cleanEnvironment,
     ...branchEnvironment,
+    APP_BASE_URL: "http://127.0.0.1:3000",
+    APP_ENVIRONMENT: "preview",
+    APP_EXPECTED_GIT_BRANCH: branch,
+    APP_EXPECTED_SUPABASE_PROJECT_REF: previewProjectRef,
     DATABASE_URL: databaseUrl,
+    GIT_BRANCH: branch,
+    GITHUB_PR_NUMBER: String(prNumber),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: publicKey,
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: publicKey,
     NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
+    PLAYWRIGHT_BROWSERS_PATH: path.join(
+      worktree,
+      ".orchestrator",
+      "playwright",
+    ),
+    PREVIEW_AUTH_EMAIL_ALLOWLIST: "@example.com",
     SUPABASE_ANON_KEY: publicKey,
     SUPABASE_BRANCH_NAME: branch,
+    SUPABASE_HOME: supabaseHome,
     SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+    SUPABASE_TELEMETRY_DISABLED: "1",
     SUPABASE_URL: supabaseUrl,
   };
 }
@@ -315,6 +342,83 @@ function packageHasScript(worktree, script, environment) {
     { cwd: worktree, env: environment, stdio: "ignore" },
   );
   return result.status === 0;
+}
+
+function verifyPreviewDatabase(worktree, environment) {
+  const databaseUrl = environment.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("Preview Branch database URL is required for lint");
+  }
+
+  const result = spawnSync(
+    "pnpm",
+    [
+      "dlx",
+      `supabase@${SUPABASE_CLI_VERSION}`,
+      "db",
+      "lint",
+      "--db-url",
+      databaseUrl,
+      "--schema",
+      "public,private,audit",
+      "--level",
+      "warning",
+      "--fail-on",
+      "error",
+    ],
+    {
+      cwd: worktree,
+      env: environment,
+      stdio: "inherit",
+    },
+  );
+
+  if (result.status !== 0) {
+    throw new Error("Supabase Preview database lint failed");
+  }
+}
+
+function verifyGeneratedTypes(worktree, environment) {
+  const previewProjectRef = environment.APP_EXPECTED_SUPABASE_PROJECT_REF;
+  if (!previewProjectRef) {
+    throw new Error("Preview Branch project ref is required for generated types");
+  }
+
+  const result = spawnSync(
+    "pnpm",
+    [
+      "dlx",
+      `supabase@${SUPABASE_CLI_VERSION}`,
+      "gen",
+      "types",
+      "--project-id",
+      previewProjectRef,
+      "--schema",
+      "public",
+    ],
+    {
+      cwd: worktree,
+      encoding: "utf8",
+      env: environment,
+      stdio: ["ignore", "pipe", "inherit"],
+    },
+  );
+
+  if (result.status !== 0) {
+    throw new Error("Supabase Preview type generation failed");
+  }
+
+  const typeFile = path.join(worktree, "src", "types", "database.ts");
+  const marker =
+    "// Application aliases derived from the generated RPC contracts above.";
+  const trackedTypes = readFileSync(typeFile, "utf8").split(marker)[0].trim();
+  const generatedTypes = result.stdout.trim();
+
+  if (trackedTypes !== generatedTypes) {
+    throw new Error(
+      "Generated Supabase types differ from src/types/database.ts",
+    );
+  }
 }
 
 function verifyImplementation(worktree, environment) {
@@ -338,10 +442,24 @@ function verifyImplementation(worktree, environment) {
     cwd: worktree,
     env: environment,
   });
-  for (const script of ["lint", "typecheck", "test", "build"]) {
+  for (const script of [
+    "lint",
+    "typecheck",
+    "test:unit",
+    "build",
+  ]) {
     if (packageHasScript(worktree, script, environment)) {
       run("pnpm", [script], { cwd: worktree, env: environment });
     }
+  }
+  verifyPreviewDatabase(worktree, environment);
+  verifyGeneratedTypes(worktree, environment);
+  if (packageHasScript(worktree, "test:blackbox", environment)) {
+    run("pnpm", ["exec", "playwright", "install", "chromium"], {
+      cwd: worktree,
+      env: environment,
+    });
+    run("pnpm", ["test:blackbox"], { cwd: worktree, env: environment });
   }
 }
 
@@ -364,7 +482,13 @@ function setAgentStatus(repoRoot, sha, state, description) {
   );
 }
 
-async function runCodex(worktree, issue, model, previewEnvironment) {
+async function runCodex(
+  repoRoot,
+  worktree,
+  issue,
+  model,
+  previewEnvironment,
+) {
   const prompt = [
     `Use /implement ${issue.url}.`,
     "Work only on this ticket and follow AGENTS.md, CONTEXT.md and the accepted ADRs.",
@@ -373,6 +497,7 @@ async function runCodex(worktree, issue, model, previewEnvironment) {
     "Never use the main Supabase project and never start Supabase locally.",
     "Keep providers simulated or allowlisted. Do not invent credentials or gates.",
     "Run the required checks, use /code-review origin/main and commit all changes.",
+    "Commit in the current worktree; do not create or push from an alternate clone.",
     "If a required Preview Branch, credential, provider asset or human gate is unavailable, stop safely and report the exact blocker without weakening acceptance criteria.",
   ].join("\n");
 
@@ -391,6 +516,8 @@ async function runCodex(worktree, issue, model, previewEnvironment) {
       "sandbox_workspace_write.network_access=true",
       "--cd",
       worktree,
+      "--add-dir",
+      repoRoot,
       prompt,
     ],
     {
@@ -541,7 +668,11 @@ async function verifyCurrentHead({
     cwd: worktree,
     capture: true,
   });
-  const previewEnvironment = resolvePreviewEnvironment(worktree, branch);
+  const previewEnvironment = resolvePreviewEnvironment(
+    worktree,
+    branch,
+    prNumber,
+  );
   setAgentStatus(repoRoot, sha, "pending", "Validating against Preview Branch");
 
   try {
@@ -802,8 +933,18 @@ async function executeTicket({ repoRoot, worktreeRoot, issue, model }) {
     const initialPr = currentPr(repoRoot, branch);
     prNumber = initialPr.number;
     await waitForSupabasePreview(repoRoot, prNumber);
-    const previewEnvironment = resolvePreviewEnvironment(worktree, branch);
-    await runCodex(worktree, issue, model, previewEnvironment);
+    const previewEnvironment = resolvePreviewEnvironment(
+      worktree,
+      branch,
+      prNumber,
+    );
+    await runCodex(
+      repoRoot,
+      worktree,
+      issue,
+      model,
+      previewEnvironment,
+    );
 
     const status = run("git", ["status", "--porcelain"], {
       cwd: worktree,
