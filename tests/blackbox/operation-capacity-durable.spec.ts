@@ -775,6 +775,94 @@ test("lease expirado é recuperado e completion stale nunca vence", async () => 
   expect(denied.error).not.toBeNull();
 });
 
+test("claim cancela batch após handoff, pausa ou opt-out", async () => {
+  const cases = [
+    { expectedReason: "human_owned", gate: "handoff" },
+    { expectedReason: "conversation_paused", gate: "pause" },
+    { expectedReason: "active_opt_out", gate: "optout" },
+  ] as const;
+
+  for (const scenario of cases) {
+    const conversationId = await createAdmittedConversation();
+    await insertProviderMessage(conversationId, {
+      body: `mensagem antes de ${scenario.gate}`,
+    });
+    const batchId = await responseBatchId(conversationId);
+    await forceResponseBatchReady(batchId);
+
+    const versionRows = await database<Array<{ version: number }>>`
+      select version
+      from public.conversations
+      where id = ${conversationId}::uuid
+    `;
+    if (scenario.gate === "handoff") {
+      const assumed = await owner.rpc("assume_conversation", {
+        expected_version: versionRows[0]!.version,
+        request_correlation_id: randomUUID(),
+        request_trace_id: randomUUID(),
+        target_conversation_id: conversationId,
+      });
+      expect(assumed.error).toBeNull();
+    } else if (scenario.gate === "pause") {
+      const paused = await owner.rpc("pause_conversation", {
+        expected_version: versionRows[0]!.version,
+        pause_reason: "teste de fence do batch",
+        request_correlation_id: randomUUID(),
+        request_trace_id: randomUUID(),
+        target_conversation_id: conversationId,
+      });
+      expect(paused.error).toBeNull();
+      await database`
+        update public.conversations
+        set
+          ownership_type = 'pedro',
+          assigned_membership_id = null,
+          updated_at = now(),
+          version = version + 1
+        where id = ${conversationId}::uuid
+      `;
+    } else {
+      await database`
+        insert into public.opt_outs (
+          organization_id, contact_id, status, reason
+        )
+        select
+          conversation.organization_id,
+          conversation.contact_id,
+          'active',
+          'teste de fence do batch'
+        from public.conversations as conversation
+        where conversation.id = ${conversationId}::uuid
+      `;
+    }
+
+    const claim = await database<
+      Array<{ result: { reason: string; status: string } }>
+    >`
+      select private.claim_ready_response_batch(
+        ${operationId}::uuid,
+        ${batchId}::uuid,
+        ${`ineligible:${scenario.gate}:${batchId}`},
+        ${randomUUID()}::uuid,
+        30,
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as result
+    `;
+    expect(claim[0]!.result).toMatchObject({
+      reason: scenario.expectedReason,
+      status: "cancelled",
+    });
+
+    const batch = await database<Array<{ status: string }>>`
+      select status
+      from private.pedro_response_batches
+      where id = ${batchId}::uuid
+    `;
+    expect(batch[0]!.status).toBe("cancelled");
+  }
+});
+
 test("novo inbound e edit durante processing invalidam o snapshot", async () => {
   const conversationId = await createAdmittedConversation();
   const messageId = await insertProviderMessage(conversationId, {
@@ -1005,6 +1093,117 @@ test("revisão usa relógio do provedor, é idempotente e reinicia grouping", as
   });
 });
 
+test("revisões no mesmo instante convergem por chave com delete dominante", async () => {
+  const conversationId = await createAdmittedConversation();
+  const messageId = await insertProviderMessage(conversationId, {
+    body: "valor inicial",
+  });
+  const providerOccurredAt = new Date(Date.now() + 60_000).toISOString();
+  const highEditKey = `z-edit-${messageId}`;
+  const lowEditKey = `a-edit-${messageId}`;
+
+  await database`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${highEditKey},
+      ${`provider-${messageId}`},
+      'edit',
+      'edição de maior chave',
+      ${providerOccurredAt}::timestamptz,
+      ${"2".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    )
+  `;
+  const lowerEdit = await database<
+    Array<{ result: { stale_reason: string; status: string } }>
+  >`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${lowEditKey},
+      ${`provider-${messageId}`},
+      'edit',
+      'edição de menor chave',
+      ${providerOccurredAt}::timestamptz,
+      ${"3".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  expect(lowerEdit[0]!.result).toMatchObject({
+    stale_reason: "same_provider_time_lower_event_key",
+    status: "stale",
+  });
+
+  const deleteResult = await database<
+    Array<{ result: { status: string } }>
+  >`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${`a-delete-${messageId}`},
+      ${`provider-${messageId}`},
+      'delete',
+      null,
+      ${providerOccurredAt}::timestamptz,
+      ${"4".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  expect(deleteResult[0]!.result.status).toBe("applied");
+
+  const editAfterDelete = await database<
+    Array<{ result: { stale_reason: string; status: string } }>
+  >`
+    select private.apply_provider_message_revision(
+      ${organizationId}::uuid,
+      ${operationId}::uuid,
+      ${connectionId}::uuid,
+      ${`zz-edit-after-delete-${messageId}`},
+      ${`provider-${messageId}`},
+      'edit',
+      'não pode vencer delete no mesmo instante',
+      ${providerOccurredAt}::timestamptz,
+      ${"5".repeat(64)},
+      ${randomUUID()}::uuid,
+      ${randomUUID()}::uuid
+    ) as result
+  `;
+  expect(editAfterDelete[0]!.result).toMatchObject({
+    stale_reason: "delete_dominates_same_provider_time",
+    status: "stale",
+  });
+
+  const converged = await database<
+    Array<{
+      active_body: string | null;
+      deleted: boolean;
+      watermark_event: string;
+      watermark_kind: string;
+    }>
+  >`
+    select
+      private.message_active_body(message.id) as active_body,
+      message.deleted_at is not null as deleted,
+      message.provider_revision_event_id as watermark_event,
+      message.provider_revision_kind as watermark_kind
+    from public.messages as message
+    where message.id = ${messageId}::uuid
+  `;
+  expect(converged[0]).toEqual({
+    active_body: null,
+    deleted: true,
+    watermark_event: `a-delete-${messageId}`,
+    watermark_kind: "delete",
+  });
+});
+
 test("backlog diferido usa clock atual, aplica backoff e comando failed rearma", async () => {
   const conversationId = await createConversation({ connection: true });
   await database`
@@ -1204,7 +1403,7 @@ test("alta demanda começa após dois minutos e termina após cooldown", async (
 
   await database`
     update private.operation_capacity_backlog
-    set status = 'cancelled', cancelled_at = now(), updated_at = now()
+    set arrived_at = now(), updated_at = now()
     where id = ${backlog[0]!.id}::uuid
   `;
   const cooling = await database<Array<{ high_demand: boolean }>>`
@@ -1231,11 +1430,24 @@ test("alta demanda começa após dois minutos e termina após cooldown", async (
     )).high_demand
   `;
   expect(recovered[0]!.high_demand).toBe(false);
+  const freshStillWaiting = await database<Array<{ waiting: boolean }>>`
+    select exists (
+      select 1
+      from private.operation_capacity_backlog
+      where id = ${backlog[0]!.id}::uuid
+        and status = 'waiting'
+    ) as waiting
+  `;
+  expect(freshStillWaiting[0]!.waiting).toBe(true);
 });
 
 test("consumer durable usa SKIP LOCKED e limita uma Operação por rodada", async () => {
   const contract = await database<
-    Array<{ fair_by_operation: boolean; skip_locked: boolean }>
+    Array<{
+      declared_snapshot: boolean;
+      fair_by_operation: boolean;
+      skip_locked: boolean;
+    }>
   >`
     select
       position(
@@ -1249,11 +1461,125 @@ test("consumer durable usa SKIP LOCKED e limita uma Operação por rodada", asyn
         in pg_get_functiondef(
           'private.consume_capacity_commands(integer)'::regprocedure
         )
-      ) > 0 as fair_by_operation
+      ) > 0 as fair_by_operation,
+      position(
+        'snapshot_record private.operation_capacity_commands%rowtype'
+        in pg_get_functiondef(
+          'private.process_capacity_command(uuid)'::regprocedure
+        )
+      ) > 0 as declared_snapshot
   `;
   expect(contract[0]).toEqual({
+    declared_snapshot: true,
     fair_by_operation: true,
     skip_locked: true,
+  });
+});
+
+test("loop de maintenance compacta histórico com limite explícito", async () => {
+  const compacted = await database.begin(async (sql) => {
+    const compactOperationId = randomUUID();
+    await sql`
+      insert into public.operations (
+        id, organization_id, name, is_default
+      )
+      values (
+        ${compactOperationId}::uuid,
+        ${organizationId}::uuid,
+        'T07 Maintenance Compaction',
+        false
+      )
+    `;
+
+    for (const index of [1, 2, 3]) {
+      await sql`
+        select private.schedule_t07_job(
+          ${organizationId}::uuid,
+          ${compactOperationId}::uuid,
+          't07.capacity_maintenance',
+          'operation_capacity',
+          ${compactOperationId}::uuid,
+          now() + interval '1 day',
+          ${`t07:test-maintenance:${compactOperationId}:${index}`},
+          jsonb_build_object('operation_id', ${compactOperationId}::uuid),
+          ${randomUUID()}::uuid,
+          ${randomUUID()}::uuid
+        )
+      `;
+    }
+
+    await sql`
+      insert into private.effect_ledger (
+        organization_id,
+        operation_id,
+        effect_key,
+        effect_type,
+        request_hash,
+        state,
+        trace_id,
+        correlation_id,
+        recorded_at
+      )
+      select
+        job.organization_id,
+        job.operation_id,
+        job.effect_key,
+        't07.capacity_maintenance',
+        repeat('a', 64),
+        'effect_recorded',
+        gen_random_uuid(),
+        gen_random_uuid(),
+        now()
+      from public.scheduled_jobs as job
+      where job.operation_id = ${compactOperationId}::uuid
+        and job.job_type = 't07.capacity_maintenance'
+    `;
+    await sql`
+      update public.scheduled_jobs
+      set status = 'completed', completed_at = now(), updated_at = now()
+      where operation_id = ${compactOperationId}::uuid
+        and job_type = 't07.capacity_maintenance'
+    `;
+
+    const result = await sql<
+      Array<{
+        result: { deleted_effects: number; deleted_jobs: number };
+      }>
+    >`
+      select private.compact_t07_capacity_maintenance_history(
+        ${compactOperationId}::uuid,
+        2,
+        10
+      ) as result
+    `;
+    const remaining = await sql<
+      Array<{ effects: number; jobs: number }>
+    >`
+      select
+        (
+          select count(*)::integer
+          from public.scheduled_jobs
+          where operation_id = ${compactOperationId}::uuid
+            and job_type = 't07.capacity_maintenance'
+        ) as jobs,
+        (
+          select count(*)::integer
+          from private.effect_ledger
+          where operation_id = ${compactOperationId}::uuid
+            and effect_type = 't07.capacity_maintenance'
+        ) as effects
+    `;
+
+    await sql`
+      delete from public.operations
+      where id = ${compactOperationId}::uuid
+    `;
+    return { remaining: remaining[0]!, result: result[0]!.result };
+  });
+
+  expect(compacted).toEqual({
+    remaining: { effects: 2, jobs: 2 },
+    result: { deleted_effects: 2, deleted_jobs: 2 },
   });
 });
 

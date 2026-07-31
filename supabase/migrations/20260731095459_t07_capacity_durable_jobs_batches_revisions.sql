@@ -285,7 +285,9 @@ begin
 
   demand_triggered := active_count >= 25 or delayed_inbound_exists;
   recovery_since_value := case
-    when demand_triggered or inbound_waiting_exists then null
+    -- A fresh inbound does not extend high demand forever. Only an inbound
+    -- that has waited for more than two minutes resets the recovery clock.
+    when demand_triggered then null
     when state_record.high_demand
       then coalesce(state_record.high_demand_recovery_since, observed_at)
     else null
@@ -792,6 +794,8 @@ alter table private.provider_message_revisions
       stale_reason is null
       or stale_reason in (
         'older_provider_time',
+        'same_provider_time_lower_event_key',
+        'delete_dominates_same_provider_time',
         'deleted_message_is_terminal'
       )
     ),
@@ -1355,6 +1359,7 @@ declare
   successor_batch_id uuid;
 begin
   if target_revision_kind not in ('edit', 'delete')
+    or nullif(target_provider_event_id, '') is null
     or target_provider_occurred_at is null
     or target_payload_hash !~ '^[0-9a-f]{64}$'
     or (
@@ -1422,6 +1427,23 @@ begin
   then
     apply_revision := false;
     stale_reason_value := 'older_provider_time';
+  elsif target_provider_occurred_at
+      = message_record.provider_revision_occurred_at
+    and message_record.provider_revision_kind = 'delete'
+    and target_revision_kind = 'edit'
+  then
+    apply_revision := false;
+    stale_reason_value := 'delete_dominates_same_provider_time';
+  elsif target_provider_occurred_at
+      = message_record.provider_revision_occurred_at
+    and target_revision_kind = message_record.provider_revision_kind
+    and convert_to(target_provider_event_id, 'UTF8')
+      <= convert_to(message_record.provider_revision_event_id, 'UTF8')
+  then
+    -- Provider IDs remain opaque. Byte order is used only as a stable
+    -- convergence key when the provider clock cannot order equal instants.
+    apply_revision := false;
+    stale_reason_value := 'same_provider_time_lower_event_key';
   elsif target_revision_kind = 'edit'
     and (
       message_record.deleted_at is not null
@@ -1882,6 +1904,84 @@ revoke all on function private.enqueue_capacity_command(
   timestamptz, uuid, uuid
 ) from public, anon, authenticated, service_role;
 
+create or replace function private.compact_t07_capacity_maintenance_history(
+  target_operation_id uuid,
+  retained_jobs integer default 720,
+  maximum_rows integer default 100
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  deleted_jobs integer := 0;
+  deleted_effects integer := 0;
+begin
+  if target_operation_id is null
+    or retained_jobs not between 1 and 10000
+    or maximum_rows not between 1 and 1000
+  then
+    raise exception 'invalid T07 maintenance compaction bounds'
+      using errcode = '22023';
+  end if;
+
+  with ranked as (
+    select
+      job.id,
+      row_number() over (
+        order by
+          coalesce(job.completed_at, job.updated_at) desc,
+          job.id desc
+      ) as recency_rank
+    from public.scheduled_jobs as job
+    where job.operation_id = target_operation_id
+      and job.job_type = 't07.capacity_maintenance'
+      and job.status in ('completed', 'cancelled', 'dead')
+  ),
+  doomed as (
+    select job.id
+    from public.scheduled_jobs as job
+    join ranked on ranked.id = job.id
+    where ranked.recency_rank > retained_jobs
+    order by
+      coalesce(job.completed_at, job.updated_at),
+      job.id
+    for update of job skip locked
+    limit maximum_rows
+  ),
+  removed_jobs as (
+    delete from public.scheduled_jobs as job
+    using doomed
+    where job.id = doomed.id
+    returning job.organization_id, job.operation_id, job.effect_key
+  ),
+  removed_effects as (
+    delete from private.effect_ledger as effect
+    using removed_jobs as removed
+    where effect.organization_id = removed.organization_id
+      and effect.operation_id = removed.operation_id
+      and effect.effect_key = removed.effect_key
+      and effect.state in ('effect_recorded', 'suppressed')
+    returning effect.id
+  )
+  select
+    (select count(*)::integer from removed_jobs),
+    (select count(*)::integer from removed_effects)
+  into deleted_jobs, deleted_effects;
+
+  return jsonb_build_object(
+    'deleted_jobs', deleted_jobs,
+    'deleted_effects', deleted_effects,
+    'retained_jobs', retained_jobs
+  );
+end;
+$$;
+
+revoke all on function private.compact_t07_capacity_maintenance_history(
+  uuid, integer, integer
+) from public, anon, authenticated, service_role;
+
 create or replace function private.emit_capacity_command_from_job()
 returns trigger
 language plpgsql
@@ -1957,6 +2057,11 @@ begin
       gen_random_uuid(),
       job_record.correlation_id
     );
+    perform private.compact_t07_capacity_maintenance_history(
+      job_record.operation_id,
+      720,
+      100
+    );
   end if;
 
   return new;
@@ -2023,6 +2128,7 @@ security definer
 set search_path = ''
 as $$
 declare
+  snapshot_record private.operation_capacity_commands%rowtype;
   command_record private.operation_capacity_commands%rowtype;
   state_record private.operation_capacity_state%rowtype;
   backlog_record private.operation_capacity_backlog%rowtype;
@@ -2913,10 +3019,12 @@ set search_path = ''
 as $$
 declare
   batch_record private.pedro_response_batches%rowtype;
+  conversation_record public.conversations%rowtype;
   message_payload jsonb;
   input_hash_value text;
   lease_token_value uuid;
   claim_status text;
+  ineligible_reason text;
 begin
   if target_worker_id is null
     or nullif(target_effect_key, '') is null
@@ -2932,6 +3040,46 @@ begin
   where batch.operation_id = target_operation_id
     and batch.id = target_batch_id
   for update;
+
+  -- Claim is the final automation fence. A ready or recoverable batch must
+  -- not survive a human handoff, a pause, or an active Contact opt-out.
+  select conversation.*
+  into strict conversation_record
+  from public.conversations as conversation
+  where conversation.operation_id = target_operation_id
+    and conversation.id = batch_record.conversation_id
+  for update;
+
+  ineligible_reason := case
+    when conversation_record.status <> 'active' then 'conversation_inactive'
+    when conversation_record.ownership_type <> 'pedro' then 'human_owned'
+    when conversation_record.is_paused then 'conversation_paused'
+    when exists (
+      select 1
+      from public.opt_outs as opt_out
+      where opt_out.organization_id = conversation_record.organization_id
+        and opt_out.contact_id = conversation_record.contact_id
+        and opt_out.status = 'active'
+    ) then 'active_opt_out'
+    else null
+  end;
+
+  if ineligible_reason is not null
+    and batch_record.status in ('ready', 'processing', 'completed')
+  then
+    perform private.cancel_response_batch(
+      batch_record.operation_id,
+      batch_record.id,
+      'claim rejected: ' || ineligible_reason,
+      request_trace_id,
+      request_correlation_id
+    );
+    return jsonb_build_object(
+      'status', 'cancelled',
+      'batch_id', batch_record.id,
+      'reason', ineligible_reason
+    );
+  end if;
 
   if batch_record.status = 'completed' then
     if batch_record.processing_lease_until > now()
