@@ -377,10 +377,7 @@ language sql
 stable
 set search_path = ''
 as $$
-  select coalesce(
-    current_setting('request.jwt.claim.role', true) = 'service_role',
-    false
-  );
+  select coalesce(auth.jwt() ->> 'role' = 'service_role', false);
 $$;
 
 revoke all on function private.has_membership_permission(uuid, text) from public;
