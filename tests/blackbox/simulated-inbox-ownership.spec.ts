@@ -69,11 +69,17 @@ function inbound(
   alias: string,
   phone?: string,
 ) {
+  const deterministicOffset = [...messageId].reduce(
+    (total, character) => total + character.codePointAt(0)!,
+    0,
+  );
   return {
     provider: "simulator",
     provider_message_id: messageId,
     provider_chat_id: chatId,
-    occurred_at: new Date().toISOString(),
+    occurred_at: new Date(
+      Date.UTC(2026, 0, 1) + deterministicOffset * 1_000,
+    ).toISOString(),
     kind: "text",
     text: `Mensagem ${messageId}`,
     identity: {
@@ -1262,15 +1268,33 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
 
   const secondCommand = randomUUID();
   const exactBoundary = "x".repeat(12_000);
-  const second = await owner.rpc("send_human_message", {
-    command_id: secondCommand,
-    expected_version: await version(conversationId),
-    message_text: exactBoundary,
-    request_correlation_id: randomUUID(),
-    request_trace_id: randomUUID(),
-    target_conversation_id: conversationId,
+  const staleFixture = await database.begin(async (sql) => {
+    const expectedVersion = await version(conversationId);
+    await sql`
+      select set_config(
+        'request.jwt.claims',
+        ${JSON.stringify({ role: "authenticated", sub: ownerId })},
+        true
+      )
+    `;
+    const command = await sql<Array<{ result: { status: string } }>>`
+      select public.send_human_message(
+        ${conversationId}::uuid,
+        ${expectedVersion},
+        ${secondCommand}::uuid,
+        ${exactBoundary},
+        ${randomUUID()}::uuid,
+        ${randomUUID()}::uuid
+      ) as result
+    `;
+    await sql`
+      update public.conversations
+      set version = version + 1, updated_at = now()
+      where id = ${conversationId}::uuid
+    `;
+    return command[0]!.result;
   });
-  expect(second.error).toBeNull();
+  expect(staleFixture).toEqual(expect.objectContaining({ status: "queued" }));
 
   const storedBoundary = await database<Array<{ body: string }>>`
     select body
@@ -1280,11 +1304,6 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
   `;
   expect(storedBoundary[0]!.body).toBe(exactBoundary);
 
-  await database`
-    update public.conversations
-    set version = version + 1, updated_at = now()
-    where id = ${conversationId}::uuid
-  `;
   const staleWorker = await admin.rpc("run_durable_workers", {
     maximum_messages: 25,
   });
@@ -1375,24 +1394,25 @@ test("retorno cheio fica pendente e resposta humana cancela uma única vez", asy
       for update of event
     `;
     const event = events[0]!;
+    const outboundEnvelope = {
+      aggregate_id: event.aggregate_id,
+      aggregate_sequence: event.aggregate_sequence,
+      aggregate_type: event.aggregate_type,
+      aggregate_version: event.aggregate_version,
+      correlation_id: event.correlation_id,
+      effect_key: event.effect_key,
+      operation_id: event.operation_id,
+      organization_id: event.organization_id,
+      outbox_event_id: event.id,
+      trace_id: event.trace_id,
+    };
     const letters = await sql<Array<{ dead_letter_id: string }>>`
       select private.dead_letter_queue_message(
         'outbound_whatsapp',
         ${event.queue_message_id},
         ${event.id}::uuid,
         ${event.effect_key},
-        jsonb_build_object(
-          'outbox_event_id', ${event.id}::uuid,
-          'organization_id', ${event.organization_id}::uuid,
-          'operation_id', ${event.operation_id}::uuid,
-          'aggregate_type', ${event.aggregate_type},
-          'aggregate_id', ${event.aggregate_id}::uuid,
-          'aggregate_version', ${event.aggregate_version},
-          'aggregate_sequence', ${event.aggregate_sequence},
-          'effect_key', ${event.effect_key},
-          'trace_id', ${event.trace_id}::uuid,
-          'correlation_id', ${event.correlation_id}::uuid
-        ),
+        ${sql.json(outboundEnvelope)}::jsonb,
         1,
         'non_retryable',
         'synthetic_replay_fixture',
@@ -1501,19 +1521,20 @@ test("replay inbound antigo é reconciliado quando a sequência já avançou", a
       for update
     `;
     const oldInbox = inboxes[0]!;
+    const inboundEnvelope = {
+      correlation_id: oldInbox.correlation_id,
+      inbox_id: oldInbox.id,
+      operation_id: operationId,
+      organization_id: oldInbox.organization_id,
+      stream_key: oldInbox.stream_key,
+      stream_sequence: oldInbox.stream_sequence,
+      trace_id: oldInbox.trace_id,
+    };
     const queueRows = await sql<Array<{ msg_id: number }>>`
       select sent.msg_id
       from pgmq.send(
         'inbound_whatsapp',
-        jsonb_build_object(
-          'inbox_id', ${oldInbox.id}::uuid,
-          'organization_id', ${oldInbox.organization_id}::uuid,
-          'operation_id', ${operationId}::uuid,
-          'stream_key', ${oldInbox.stream_key},
-          'stream_sequence', ${oldInbox.stream_sequence},
-          'trace_id', ${oldInbox.trace_id}::uuid,
-          'correlation_id', ${oldInbox.correlation_id}::uuid
-        )
+        ${sql.json(inboundEnvelope)}::jsonb
       ) as sent(msg_id)
     `;
     const queueMessageId = queueRows[0]!.msg_id;
@@ -1534,15 +1555,7 @@ test("replay inbound antigo é reconciliado quando a sequência já avançou", a
         ${queueMessageId},
         ${oldInbox.id}::uuid,
         ${`webhook:${connectionId}:${firstMessageId}`},
-        jsonb_build_object(
-          'inbox_id', ${oldInbox.id}::uuid,
-          'organization_id', ${oldInbox.organization_id}::uuid,
-          'operation_id', ${operationId}::uuid,
-          'stream_key', ${oldInbox.stream_key},
-          'stream_sequence', ${oldInbox.stream_sequence},
-          'trace_id', ${oldInbox.trace_id}::uuid,
-          'correlation_id', ${oldInbox.correlation_id}::uuid
-        ),
+        ${sql.json(inboundEnvelope)}::jsonb,
         1,
         'non_retryable',
         'synthetic_stale_replay',
