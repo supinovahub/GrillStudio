@@ -508,13 +508,18 @@ test("redelivery físico concorrente adia sem deadlock nem consumir tentativas",
     stream_sequence: inbox.stream_sequence,
     trace_id: inbox.trace_id,
   };
-  await database`
-    select pgmq.send(
+  const duplicateMessages = await database<Array<{ msg_id: number }>>`
+    select sent.msg_id
+    from pgmq.send(
       'inbound_whatsapp',
       ${database.json(envelope)}::jsonb,
       60
-    )
+    ) as sent(msg_id)
   `;
+  const queueMessageIds = [
+    acceptedQueueMessageId,
+    duplicateMessages[0]!.msg_id,
+  ];
 
   await database.begin(async (lockSql) => {
     await lockSql`
@@ -525,20 +530,18 @@ test("redelivery físico concorrente adia sem deadlock nem consumir tentativas",
         and stream.stream_key = ${inbox.stream_key}
       for update
     `;
-    await database`
-      select pgmq.set_vt(
-        'inbound_whatsapp',
-        queued.msg_id,
-        0
-      )
-      from pgmq.q_inbound_whatsapp as queued
-      where queued.message ->> 'inbox_id' = ${inbox.id}
-    `;
 
     const deferred = await Promise.all(
-      Array.from({ length: 2 }, () =>
+      queueMessageIds.map((queueMessageId) =>
         database.begin(async (workerSql) => {
           await workerSql`set local statement_timeout = '5s'`;
+          await workerSql`
+            select pgmq.set_vt(
+              'inbound_whatsapp',
+              ${queueMessageId},
+              0
+            )
+          `;
           const result = await workerSql<
             Array<{ result: { deferred: number } }>
           >`
