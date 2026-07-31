@@ -13,6 +13,20 @@ import {
 export const runtime = "nodejs";
 const maximumPayloadBytes = 64 * 1024;
 
+type PostgrestErrorShape = {
+  code?: unknown;
+  details?: unknown;
+  hint?: unknown;
+  message?: unknown;
+};
+
+function isDivergentWebhookReplay(error: PostgrestErrorShape): boolean {
+  if (error.code !== "40001" && error.code !== "PGRST") return false;
+  return [error.message, error.details, error.hint]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => value.includes("Webhook replay conflict"));
+}
+
 function authorized(request: Request): boolean {
   const configured = process.env.SIMULATOR_INGRESS_TOKEN;
   const supplied = request.headers.get("authorization")?.replace(
@@ -29,7 +43,9 @@ function authorized(request: Request): boolean {
   );
 }
 
-async function readLimitedJson(request: Request): Promise<unknown> {
+async function readLimitedJson(
+  request: Request,
+): Promise<{ parsed: unknown; rawBody: string }> {
   if (
     !request.headers
       .get("content-type")
@@ -65,7 +81,8 @@ async function readLimitedJson(request: Request): Promise<unknown> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const rawBody = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return { parsed: JSON.parse(rawBody), rawBody };
 }
 
 export async function POST(request: Request) {
@@ -83,12 +100,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const raw = await readLimitedJson(request);
-    const connectionId = simulatorConnectionId(raw);
-    const normalizedEvent = simulatorInboundAdapter.normalize(raw);
+    const { parsed, rawBody } = await readLimitedJson(request);
+    const connectionId = simulatorConnectionId(parsed);
+    const normalizedEvent = simulatorInboundAdapter.normalize(parsed);
     const supabase = createAdminClient();
     const { data, error } = await supabase.rpc("ingest_simulated_inbound", {
       normalized_event: normalizedEvent,
+      raw_body: rawBody,
       request_correlation_id: context.correlationId,
       request_trace_id: context.traceId,
       target_connection_id: connectionId,
@@ -96,6 +114,12 @@ export async function POST(request: Request) {
 
     if (error) {
       writeLog("simulator.inbound", { ...context, outcome: "failed" });
+      if (isDivergentWebhookReplay(error)) {
+        return NextResponse.json(
+          { error: "Evento já recebido com outro conteúdo." },
+          { status: 409 },
+        );
+      }
       return NextResponse.json(
         { error: "Inbound sintético recusado." },
         { status: 422 },
@@ -104,7 +128,11 @@ export async function POST(request: Request) {
 
     // Acceptance is already committed. Wake is intentionally best-effort;
     // the 5-second durable recovery path processes the same queue.
-    void wakeDurableWorker(context);
+    const workerWoke = await wakeDurableWorker(context);
+    writeLog("durable_worker.wake", {
+      ...context,
+      outcome: workerWoke ? "succeeded" : "failed",
+    });
     writeLog("simulator.inbound", { ...context, outcome: "accepted" });
     return NextResponse.json(data, { status: 202 });
   } catch (error) {
