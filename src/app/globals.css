@@ -1112,6 +1112,471 @@ button {
   }
 }
 
+.lead-page,
+.lead-detail-page,
+.kanban-page {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.lead-page .central-heading,
+.lead-detail-page .central-heading,
+.kanban-page .central-heading {
+  margin-bottom: 0.4rem;
+}
+
+.lead-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-width: 0;
+  padding: 1.15rem;
+}
+
+.lead-panel .section-heading h2 {
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  margin: 0.45rem 0 0;
+}
+
+.lead-form {
+  margin-top: 1.2rem;
+}
+
+.lead-form-grid,
+.lead-context-grid,
+.lead-detail-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lead-context-grid {
+  align-items: start;
+}
+
+.lead-action-choice {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.lead-form > .button {
+  justify-self: start;
+}
+
+.lead-page .field select,
+.lead-page .field textarea,
+.lead-detail-page .field select,
+.lead-detail-page .field textarea,
+.kanban-transition select,
+.kanban-transition textarea {
+  background: white;
+  border: 1px solid #bfb3a4;
+  border-radius: var(--radius-small);
+  color: var(--text);
+  padding: 0.75rem 0.85rem;
+  width: 100%;
+}
+
+.lead-page .field select,
+.lead-detail-page .field select,
+.kanban-transition select {
+  min-height: 48px;
+}
+
+.lead-page .field textarea,
+.lead-detail-page .field textarea,
+.kanban-transition textarea {
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.lead-page .field select:hover,
+.lead-page .field textarea:hover,
+.lead-detail-page .field select:hover,
+.lead-detail-page .field textarea:hover,
+.kanban-transition select:hover,
+.kanban-transition textarea:hover {
+  border-color: #8e8171;
+}
+
+.lead-table-wrap {
+  margin-top: 1rem;
+  overflow-x: auto;
+}
+
+.lead-table {
+  border-collapse: collapse;
+  min-width: 52rem;
+  width: 100%;
+}
+
+.lead-table th,
+.lead-table td {
+  border-top: 1px solid var(--line);
+  font-size: 0.76rem;
+  padding: 0.85rem 0.7rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.lead-table th {
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lead-table td:first-child a,
+.kanban-card-heading a {
+  font-weight: 760;
+  text-decoration-color: rgba(216, 92, 36, 0.45);
+  text-underline-offset: 3px;
+}
+
+.lead-table td:first-child span,
+.kanban-card-heading div > span {
+  color: var(--text-muted);
+  display: block;
+  font-size: 0.68rem;
+  margin-top: 0.18rem;
+}
+
+.lead-stage {
+  background: var(--surface-muted);
+  border-radius: 99px;
+  display: inline-flex;
+  font-size: 0.66rem;
+  font-weight: 730;
+  padding: 0.4rem 0.62rem;
+  white-space: nowrap;
+}
+
+.lead-stage-purchased {
+  background: var(--safe-soft);
+  color: var(--safe);
+}
+
+.lead-stage-lost {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.lead-detail-grid {
+  align-items: start;
+}
+
+.lead-history-panel {
+  grid-row: span 2;
+}
+
+.lead-detail-facts,
+.lead-card-facts {
+  display: grid;
+  gap: 0;
+  margin: 1rem 0;
+}
+
+.lead-detail-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lead-detail-facts div,
+.lead-card-facts div {
+  border-top: 1px solid var(--line);
+  padding: 0.7rem 0;
+}
+
+.lead-detail-facts div:nth-child(odd) {
+  padding-right: 0.7rem;
+}
+
+.lead-detail-facts div:nth-child(even) {
+  border-left: 1px solid var(--line);
+  padding-left: 0.7rem;
+}
+
+.lead-detail-facts dt,
+.lead-card-facts dt {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  margin-bottom: 0.2rem;
+}
+
+.lead-detail-facts dd,
+.lead-card-facts dd {
+  font-size: 0.76rem;
+  font-weight: 680;
+  margin: 0;
+}
+
+.lead-panel h3 {
+  font-size: 0.76rem;
+  margin: 1.2rem 0 0.4rem;
+}
+
+.lead-detail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lead-detail-list li {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.75rem 0;
+}
+
+.lead-detail-list strong {
+  font-size: 0.78rem;
+}
+
+.lead-detail-list span,
+.lead-detail-list small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.lead-context-block {
+  border-top: 1px solid var(--line);
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+}
+
+.lead-context-block strong {
+  font-size: 0.78rem;
+}
+
+.lead-context-block p,
+.lead-context-block small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+.lead-context-block p {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+}
+
+.lead-context-block small {
+  display: block;
+  margin-top: 0.45rem;
+}
+
+.lead-context-block.internal {
+  background: var(--surface-muted);
+  border: 0;
+  border-radius: var(--radius-small);
+  padding: 0.8rem;
+}
+
+.lead-history {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.lead-history li {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 12px 1fr;
+  padding-bottom: 0.9rem;
+  position: relative;
+}
+
+.lead-history li > span {
+  background: var(--accent);
+  border: 3px solid var(--accent-soft);
+  border-radius: 50%;
+  height: 10px;
+  margin-top: 0.2rem;
+  width: 10px;
+  z-index: 1;
+}
+
+.lead-history li:not(:last-child)::before {
+  background: var(--line);
+  content: "";
+  height: 100%;
+  left: 4px;
+  position: absolute;
+  top: 0.5rem;
+  width: 1px;
+}
+
+.lead-history strong {
+  font-size: 0.76rem;
+}
+
+.lead-history p {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  margin: 0.25rem 0 0;
+}
+
+.lead-opt-out {
+  background: var(--danger-soft);
+  border-radius: 99px;
+  color: var(--danger);
+  font-size: 0.6rem;
+  font-weight: 760;
+  padding: 0.32rem 0.5rem;
+}
+
+.kanban-board {
+  display: grid;
+  gap: 0.8rem;
+  grid-auto-columns: minmax(17rem, 1fr);
+  grid-auto-flow: column;
+  overflow-x: auto;
+  padding-bottom: 0.7rem;
+}
+
+.kanban-column {
+  background: #ebe3d7;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-height: 26rem;
+  padding: 0.75rem;
+}
+
+.kanban-column > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  padding: 0.1rem 0.15rem 0.75rem;
+}
+
+.kanban-column > header h2 {
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.kanban-cards {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.kanban-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  box-shadow: 0 7px 22px rgba(52, 41, 29, 0.07);
+  padding: 0.8rem;
+}
+
+.kanban-card-heading {
+  align-items: start;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.lead-card-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0.75rem 0 0;
+}
+
+.lead-card-facts div:nth-child(odd) {
+  padding-right: 0.5rem;
+}
+
+.lead-card-facts div:nth-child(even) {
+  border-left: 1px solid var(--line);
+  padding-left: 0.5rem;
+}
+
+.lead-card-facts dd {
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.kanban-transition {
+  border-top: 1px solid var(--line);
+  margin-top: 0.6rem;
+  padding-top: 0.65rem;
+}
+
+.kanban-transition summary {
+  color: var(--accent-dark);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 740;
+}
+
+.kanban-transition form {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.7rem;
+}
+
+.kanban-transition label:not(.check-field) {
+  display: grid;
+  font-size: 0.68rem;
+  font-weight: 700;
+  gap: 0.35rem;
+}
+
+.kanban-transition select,
+.kanban-transition textarea {
+  font-size: 0.7rem;
+}
+
+.kanban-transition .button {
+  font-size: 0.7rem;
+  min-height: 38px;
+}
+
+.kanban-closed,
+.kanban-empty {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.kanban-closed {
+  border-top: 1px solid var(--line);
+  margin: 0.65rem 0 0;
+  padding-top: 0.65rem;
+}
+
+.kanban-empty {
+  margin: 0.4rem;
+}
+
+@media (max-width: 900px) {
+  .lead-form-grid,
+  .lead-context-grid,
+  .lead-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-action-choice {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-history-panel {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 680px) {
+  .lead-form > .button,
+  .lead-merge-panel .button {
+    width: 100%;
+  }
+
+  .lead-detail-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-detail-facts div:nth-child(even) {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

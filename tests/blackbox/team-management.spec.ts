@@ -462,6 +462,7 @@ test("anonymous, pending, revoked, cross-Imobiliária and Corretor scopes are de
   outsiderOperationId = randomUUID();
   const outsiderMembershipId = randomUUID();
   const outsiderOpportunityId = randomUUID();
+  const outsiderContactId = randomUUID();
   const outsiderEmail = `team-outsider-${suffix}@example.com`;
   const outsiderUser = await admin.auth.admin.createUser({
     email: outsiderEmail,
@@ -498,7 +499,13 @@ test("anonymous, pending, revoked, cross-Imobiliária and Corretor scopes are de
     operation_id: outsiderOperationId,
     organization_id: outsiderOrganizationId,
   });
+  await insertFixture("contacts", {
+    display_name: "Contato Externo Sintético",
+    id: outsiderContactId,
+    organization_id: outsiderOrganizationId,
+  });
   await insertFixture("opportunities", {
+    contact_id: outsiderContactId,
     id: outsiderOpportunityId,
     operation_id: outsiderOperationId,
     organization_id: outsiderOrganizationId,
@@ -528,10 +535,17 @@ test("anonymous, pending, revoked, cross-Imobiliária and Corretor scopes are de
 
 test("deactivation revokes sessions, stops Offers and returns human work without random reassignment", async () => {
   const opportunityId = randomUUID();
+  const contactId = randomUUID();
   const callId = randomUUID();
   const assignmentId = randomUUID();
+  await insertFixture("contacts", {
+    display_name: "Contato de Desativação Sintético",
+    id: contactId,
+    organization_id: organizationId,
+  });
   await insertFixture("opportunities", {
     assigned_membership_id: brokerMembershipId,
+    contact_id: contactId,
     id: opportunityId,
     operation_id: operationId,
     organization_id: organizationId,
