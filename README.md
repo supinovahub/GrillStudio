@@ -13,8 +13,9 @@ Plataforma de atendimento, qualificação, agendamento e acompanhamento comercia
 
 A fundação executável inclui a PWA em Next.js 16, Auth SSR, o shell autenticado
 da Operação, convites e aprovação de Membros, papéis cumulativos, permissões de
-Gestor, isolamento por RLS, proteção de ambiente e observabilidade básica. Modo
-produção nasce desligado.
+Gestor, perfil institucional e Contexto inicial versionado, isolamento por RLS,
+proteção de ambiente e observabilidade básica. Modo produção nasce desligado e
+só pode ser habilitado pelo Dono depois de uma publicação válida.
 
 ## Ambientes e execução por agentes
 
