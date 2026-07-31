@@ -1577,6 +1577,439 @@ button {
   }
 }
 
+.context-page {
+  margin: 0 auto;
+  max-width: 94rem;
+  padding: clamp(1.25rem, 3vw, 2.6rem);
+}
+
+.context-header,
+.context-editor > header,
+.context-actions,
+.context-readiness > div:first-child {
+  align-items: end;
+  display: flex;
+  gap: 1.5rem;
+  justify-content: space-between;
+}
+
+.context-header h1,
+.context-editor h2,
+.context-actions h2,
+.context-readiness h2,
+.context-history h2,
+.context-empty h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  margin: 0;
+}
+
+.context-header h1 {
+  font-size: clamp(2rem, 4vw, 3.6rem);
+}
+
+.context-header p:not(.eyebrow),
+.context-editor header p:not(.eyebrow),
+.context-actions p:not(.eyebrow),
+.context-readiness p,
+.context-empty p:not(.eyebrow) {
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin: 0.75rem 0 0;
+  max-width: 48rem;
+}
+
+.context-header-status {
+  align-items: end;
+  display: grid;
+  gap: 0.55rem;
+  justify-items: end;
+  min-width: max-content;
+}
+
+.context-publication-status,
+.context-production-status,
+.context-version-badge {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  padding: 0.48rem 0.72rem;
+}
+
+.context-publication-status.published,
+.context-production-status.enabled,
+.context-version-badge.validating {
+  background: var(--safe-soft);
+  border-color: #a8ccb7;
+  color: var(--safe);
+}
+
+.context-page .status-banner {
+  background: var(--safe-soft);
+  border: 1px solid #a8ccb7;
+  border-radius: var(--radius-small);
+  color: var(--safe);
+  font-size: 0.82rem;
+  margin-top: 1.2rem;
+  padding: 0.85rem 1rem;
+}
+
+.context-empty,
+.context-editor,
+.context-validation,
+.context-actions,
+.context-readiness,
+.context-history,
+.context-page .error-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-top: 1.2rem;
+  padding: clamp(1.2rem, 2.5vw, 2rem);
+}
+
+.context-empty {
+  align-items: start;
+  display: grid;
+  justify-items: start;
+  min-height: 18rem;
+  place-content: center;
+}
+
+.context-page .primary-button,
+.context-page .secondary-button,
+.context-page .text-button {
+  align-items: center;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 750;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.72rem 1rem;
+}
+
+.context-page .primary-button {
+  background: var(--accent);
+  color: white;
+}
+
+.context-page .secondary-button {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.context-page .text-button {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.context-page .text-button.danger {
+  color: var(--danger);
+}
+
+.context-page button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.context-version-strip {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1.2rem;
+}
+
+.context-version-strip > span:last-child {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin-left: auto;
+}
+
+.institutional-fields {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1.5rem;
+}
+
+.institutional-field {
+  background: #fffcf6;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  display: grid;
+  gap: 0.85rem;
+  margin: 0;
+  min-width: 0;
+  padding: 1rem;
+}
+
+.institutional-field legend {
+  font-size: 0.86rem;
+  font-weight: 780;
+  padding: 0 0.4rem;
+}
+
+.institutional-field > p {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.institutional-field label,
+.persona-section label,
+.context-production-form > label:not(.persona-check) {
+  color: var(--text-muted);
+  display: grid;
+  font-size: 0.7rem;
+  font-weight: 720;
+  gap: 0.4rem;
+}
+
+.institutional-field input:not([type="checkbox"]),
+.institutional-field select,
+.persona-section input:not([type="checkbox"]),
+.persona-section textarea,
+.context-production-form input:not([type="checkbox"]) {
+  background: white;
+  border: 1px solid #bfb3a4;
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  min-height: 42px;
+  padding: 0.65rem 0.72rem;
+  width: 100%;
+}
+
+.institutional-field small {
+  font-size: 0.64rem;
+  font-weight: 500;
+}
+
+.institutional-field-grid,
+.persona-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.institutional-confirmation,
+.persona-check {
+  align-items: center;
+  color: var(--text);
+  display: flex !important;
+  font-size: 0.72rem !important;
+  gap: 0.55rem !important;
+}
+
+.institutional-confirmation input,
+.persona-check input {
+  accent-color: var(--accent);
+  height: 17px;
+  width: 17px;
+}
+
+.persona-section {
+  border-top: 1px solid var(--line);
+  margin-top: 1.4rem;
+  padding-top: 1.4rem;
+}
+
+.persona-section h3,
+.context-readiness h3 {
+  font-size: 0.86rem;
+  margin: 0 0 1rem;
+}
+
+.persona-section textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.persona-guardrails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.persona-guardrails span {
+  background: var(--safe-soft);
+  border-radius: 99px;
+  color: var(--safe);
+  font-size: 0.67rem;
+  font-weight: 720;
+  padding: 0.45rem 0.65rem;
+}
+
+.context-permission-note {
+  background: var(--accent-soft);
+  border-radius: 8px;
+  color: #763613;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  padding: 0.7rem 0.8rem;
+}
+
+.context-validation {
+  background: #f7fbf8;
+  border-color: #a8ccb7;
+}
+
+.context-validation ul,
+.context-readiness ul {
+  color: var(--danger);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  padding-left: 1.2rem;
+}
+
+.context-validation details {
+  border-top: 1px solid #cbded3;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.context-validation summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 740;
+}
+
+.context-validation pre {
+  background: #20251f;
+  border-radius: 8px;
+  color: #e3eee6;
+  font-size: 0.67rem;
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.85rem;
+}
+
+.context-action-buttons {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.context-readiness-columns {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1.3rem;
+}
+
+.context-readiness-columns > div {
+  background: var(--surface-muted);
+  border-radius: var(--radius-small);
+  padding: 1rem;
+}
+
+.context-readiness-columns p {
+  font-size: 0.75rem;
+}
+
+.context-production-form {
+  align-items: end;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: minmax(14rem, 1fr) minmax(16rem, 1.4fr) auto;
+  margin-top: 1.3rem;
+  padding-top: 1.3rem;
+}
+
+.context-history ol {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.context-history li {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: minmax(12rem, 1fr) auto minmax(15rem, auto);
+  padding: 0.9rem 0;
+}
+
+.context-history strong,
+.context-history span {
+  display: block;
+}
+
+.context-history span,
+.context-history small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  margin-top: 0.2rem;
+}
+
+.context-history code {
+  font-size: 0.7rem;
+}
+
+.context-page .page-loading {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  padding: 2rem;
+}
+
+@media (max-width: 980px) {
+  .institutional-fields,
+  .context-readiness-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .context-production-form {
+    grid-template-columns: 1fr;
+  }
+
+  .context-history li {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .context-header,
+  .context-editor > header,
+  .context-actions,
+  .context-readiness > div:first-child {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .context-header-status {
+    align-items: start;
+    justify-items: start;
+  }
+
+  .institutional-field-grid,
+  .persona-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .context-action-buttons,
+  .context-action-buttons form,
+  .context-action-buttons button,
+  .context-editor header button,
+  .context-production-form button {
+    width: 100%;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

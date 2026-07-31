@@ -215,214 +215,175 @@ export type Database = {
           },
         ]
       }
-      contact_phone_observations: {
+      context_publications: {
         Row: {
-          contact_id: string
-          contact_phone_id: string
+          behavioral_hash: string
+          behavioral_snapshot: Json
+          behavioral_version_id: string
+          combined_hash: string
+          factual_hash: string
+          factual_snapshot: Json
+          factual_version_id: string
           id: string
-          observed_at: string
+          operation_id: string
           organization_id: string
-          original_value: string
-          source_type: string
+          publication_number: number
+          published_at: string
+          published_by_user_id: string
         }
         Insert: {
-          contact_id: string
-          contact_phone_id: string
+          behavioral_hash: string
+          behavioral_snapshot: Json
+          behavioral_version_id: string
+          combined_hash: string
+          factual_hash: string
+          factual_snapshot: Json
+          factual_version_id: string
           id?: string
-          observed_at?: string
+          operation_id: string
           organization_id: string
-          original_value: string
-          source_type: string
+          publication_number: number
+          published_at?: string
+          published_by_user_id: string
         }
         Update: {
-          contact_id?: string
-          contact_phone_id?: string
+          behavioral_hash?: string
+          behavioral_snapshot?: Json
+          behavioral_version_id?: string
+          combined_hash?: string
+          factual_hash?: string
+          factual_snapshot?: Json
+          factual_version_id?: string
           id?: string
-          observed_at?: string
+          operation_id?: string
           organization_id?: string
-          original_value?: string
-          source_type?: string
+          publication_number?: number
+          published_at?: string
+          published_by_user_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "contact_phone_observations_organization_id_contact_id_fkey"
-            columns: ["organization_id", "contact_id"]
-            isOneToOne: false
-            referencedRelation: "contacts"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "contact_phone_observations_organization_id_contact_phone_i_fkey"
-            columns: ["organization_id", "contact_phone_id"]
-            isOneToOne: false
-            referencedRelation: "contact_phones"
-            referencedColumns: ["organization_id", "id"]
-          },
-        ]
-      }
-      contact_phones: {
-        Row: {
-          contact_id: string
-          created_at: string
-          e164: string
-          id: string
-          is_primary: boolean
-          organization_id: string
-          original_value: string
-          verified_at: string | null
-        }
-        Insert: {
-          contact_id: string
-          created_at?: string
-          e164: string
-          id?: string
-          is_primary?: boolean
-          organization_id: string
-          original_value: string
-          verified_at?: string | null
-        }
-        Update: {
-          contact_id?: string
-          created_at?: string
-          e164?: string
-          id?: string
-          is_primary?: boolean
-          organization_id?: string
-          original_value?: string
-          verified_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "contact_phones_organization_id_contact_id_fkey"
-            columns: ["organization_id", "contact_id"]
-            isOneToOne: false
-            referencedRelation: "contacts"
-            referencedColumns: ["organization_id", "id"]
-          },
-        ]
-      }
-      contacts: {
-        Row: {
-          created_at: string
-          display_name: string | null
-          id: string
-          merged_into_contact_id: string | null
-          organization_id: string
-          status: string
-          updated_at: string
-          version: number
-        }
-        Insert: {
-          created_at?: string
-          display_name?: string | null
-          id?: string
-          merged_into_contact_id?: string | null
-          organization_id: string
-          status?: string
-          updated_at?: string
-          version?: number
-        }
-        Update: {
-          created_at?: string
-          display_name?: string | null
-          id?: string
-          merged_into_contact_id?: string | null
-          organization_id?: string
-          status?: string
-          updated_at?: string
-          version?: number
-        }
-        Relationships: [
-          {
-            foreignKeyName: "contacts_organization_id_fkey"
+            foreignKeyName: "context_publications_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "contacts_organization_id_merged_into_contact_id_fkey"
-            columns: ["organization_id", "merged_into_contact_id"]
+            foreignKeyName: "context_publications_organization_id_operation_id_behavior_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "behavioral_version_id",
+            ]
             isOneToOne: false
-            referencedRelation: "contacts"
+            referencedRelation: "persona_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_factual__fkey"
+            columns: ["organization_id", "operation_id", "factual_version_id"]
+            isOneToOne: false
+            referencedRelation: "institutional_profile_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
+          {
+            foreignKeyName: "context_publications_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
             referencedColumns: ["organization_id", "id"]
           },
         ]
       }
-      conversations: {
+      institutional_profile_versions: {
         Row: {
-          assigned_membership_id: string | null
-          closed_at: string | null
-          contact_id: string
+          archived_at: string | null
+          archived_by_user_id: string | null
+          baseline_version_id: string | null
+          content_hash: string | null
+          created_at: string
+          created_by_user_id: string
+          diff_snapshot: Json | null
+          fields: Json
           id: string
-          opened_at: string
           operation_id: string
-          opportunity_id: string
           organization_id: string
-          ownership_type: string
-          sleeping_since: string | null
+          published_at: string | null
+          published_by_user_id: string | null
           status: string
           updated_at: string
+          validated_at: string | null
+          validated_by_user_id: string | null
+          validation_errors: Json
           version: number
+          version_number: number
         }
         Insert: {
-          assigned_membership_id?: string | null
-          closed_at?: string | null
-          contact_id: string
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id: string
+          diff_snapshot?: Json | null
+          fields?: Json
           id?: string
-          opened_at?: string
           operation_id: string
-          opportunity_id: string
           organization_id: string
-          ownership_type?: string
-          sleeping_since?: string | null
+          published_at?: string | null
+          published_by_user_id?: string | null
           status?: string
           updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
           version?: number
+          version_number: number
         }
         Update: {
-          assigned_membership_id?: string | null
-          closed_at?: string | null
-          contact_id?: string
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id?: string
+          diff_snapshot?: Json | null
+          fields?: Json
           id?: string
-          opened_at?: string
           operation_id?: string
-          opportunity_id?: string
           organization_id?: string
-          ownership_type?: string
-          sleeping_since?: string | null
+          published_at?: string | null
+          published_by_user_id?: string | null
           status?: string
           updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
           version?: number
+          version_number?: number
         }
         Relationships: [
           {
-            foreignKeyName: "conversations_organization_id_assigned_membership_id_fkey"
-            columns: ["organization_id", "assigned_membership_id"]
+            foreignKeyName: "institutional_profile_versio_organization_id_operation_id_fkey1"
+            columns: ["organization_id", "operation_id", "baseline_version_id"]
             isOneToOne: false
-            referencedRelation: "memberships"
-            referencedColumns: ["organization_id", "id"]
+            referencedRelation: "institutional_profile_versions"
+            referencedColumns: ["organization_id", "operation_id", "id"]
           },
           {
-            foreignKeyName: "conversations_organization_id_contact_id_fkey"
-            columns: ["organization_id", "contact_id"]
-            isOneToOne: false
-            referencedRelation: "contacts"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "conversations_organization_id_operation_id_fkey"
+            foreignKeyName: "institutional_profile_version_organization_id_operation_id_fkey"
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
             referencedColumns: ["organization_id", "id"]
           },
           {
-            foreignKeyName: "conversations_organization_id_opportunity_id_fkey"
-            columns: ["organization_id", "opportunity_id"]
+            foreignKeyName: "institutional_profile_versions_organization_id_fkey"
+            columns: ["organization_id"]
             isOneToOne: false
-            referencedRelation: "opportunities"
-            referencedColumns: ["organization_id", "id"]
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -703,6 +664,7 @@ export type Database = {
       }
       operation_settings: {
         Row: {
+          active_context_publication_id: string | null
           created_at: string
           operation_id: string
           organization_id: string
@@ -711,6 +673,7 @@ export type Database = {
           version: number
         }
         Insert: {
+          active_context_publication_id?: string | null
           created_at?: string
           operation_id: string
           organization_id: string
@@ -719,6 +682,7 @@ export type Database = {
           version?: number
         }
         Update: {
+          active_context_publication_id?: string | null
           created_at?: string
           operation_id?: string
           organization_id?: string
@@ -727,6 +691,17 @@ export type Database = {
           version?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "operation_settings_active_context_publication_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "active_context_publication_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "context_publications"
+            referencedColumns: ["organization_id", "operation_id", "id"]
+          },
           {
             foreignKeyName: "operation_settings_operation_id_fkey"
             columns: ["operation_id"]
@@ -789,64 +764,36 @@ export type Database = {
       }
       opportunities: {
         Row: {
-          amount_scope: string
           assigned_membership_id: string | null
-          contact_id: string
           created_at: string
           id: string
-          loss_reason: string | null
           operation_id: string
           organization_id: string
-          pedro_context: string | null
-          source_type: string
           stage: string
-          stage_entered_at: string
-          unit_count: number
           updated_at: string
           version: number
         }
         Insert: {
-          amount_scope?: string
           assigned_membership_id?: string | null
-          contact_id: string
           created_at?: string
           id?: string
-          loss_reason?: string | null
           operation_id: string
           organization_id: string
-          pedro_context?: string | null
-          source_type?: string
           stage?: string
-          stage_entered_at?: string
-          unit_count?: number
           updated_at?: string
           version?: number
         }
         Update: {
-          amount_scope?: string
           assigned_membership_id?: string | null
-          contact_id?: string
           created_at?: string
           id?: string
-          loss_reason?: string | null
           operation_id?: string
           organization_id?: string
-          pedro_context?: string | null
-          source_type?: string
           stage?: string
-          stage_entered_at?: string
-          unit_count?: number
           updated_at?: string
           version?: number
         }
         Relationships: [
-          {
-            foreignKeyName: "opportunities_organization_contact_fkey"
-            columns: ["organization_id", "contact_id"]
-            isOneToOne: false
-            referencedRelation: "contacts"
-            referencedColumns: ["organization_id", "id"]
-          },
           {
             foreignKeyName: "opportunities_organization_id_assigned_membership_id_fkey"
             columns: ["organization_id", "assigned_membership_id"]
@@ -866,171 +813,6 @@ export type Database = {
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
-            referencedColumns: ["organization_id", "id"]
-          },
-        ]
-      }
-      opportunity_participants: {
-        Row: {
-          consent_context: string | null
-          contact_id: string | null
-          created_at: string
-          display_name: string
-          id: string
-          opportunity_id: string
-          organization_id: string
-          phone_e164: string | null
-          phone_original: string | null
-          role: string
-        }
-        Insert: {
-          consent_context?: string | null
-          contact_id?: string | null
-          created_at?: string
-          display_name: string
-          id?: string
-          opportunity_id: string
-          organization_id: string
-          phone_e164?: string | null
-          phone_original?: string | null
-          role?: string
-        }
-        Update: {
-          consent_context?: string | null
-          contact_id?: string | null
-          created_at?: string
-          display_name?: string
-          id?: string
-          opportunity_id?: string
-          organization_id?: string
-          phone_e164?: string | null
-          phone_original?: string | null
-          role?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "opportunity_participants_organization_id_contact_id_fkey"
-            columns: ["organization_id", "contact_id"]
-            isOneToOne: false
-            referencedRelation: "contacts"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "opportunity_participants_organization_id_opportunity_id_fkey"
-            columns: ["organization_id", "opportunity_id"]
-            isOneToOne: false
-            referencedRelation: "opportunities"
-            referencedColumns: ["organization_id", "id"]
-          },
-        ]
-      }
-      opportunity_stage_history: {
-        Row: {
-          actor_membership_id: string | null
-          actor_user_id: string | null
-          correlation_id: string
-          created_at: string
-          from_stage: string | null
-          id: string
-          operation_id: string
-          opportunity_id: string
-          organization_id: string
-          reason: string | null
-          to_stage: string
-          trace_id: string
-        }
-        Insert: {
-          actor_membership_id?: string | null
-          actor_user_id?: string | null
-          correlation_id: string
-          created_at?: string
-          from_stage?: string | null
-          id?: string
-          operation_id: string
-          opportunity_id: string
-          organization_id: string
-          reason?: string | null
-          to_stage: string
-          trace_id: string
-        }
-        Update: {
-          actor_membership_id?: string | null
-          actor_user_id?: string | null
-          correlation_id?: string
-          created_at?: string
-          from_stage?: string | null
-          id?: string
-          operation_id?: string
-          opportunity_id?: string
-          organization_id?: string
-          reason?: string | null
-          to_stage?: string
-          trace_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "opportunity_stage_history_organization_id_actor_membership_fkey"
-            columns: ["organization_id", "actor_membership_id"]
-            isOneToOne: false
-            referencedRelation: "memberships"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "opportunity_stage_history_organization_id_operation_id_fkey"
-            columns: ["organization_id", "operation_id"]
-            isOneToOne: false
-            referencedRelation: "operations"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "opportunity_stage_history_organization_id_opportunity_id_fkey"
-            columns: ["organization_id", "opportunity_id"]
-            isOneToOne: false
-            referencedRelation: "opportunities"
-            referencedColumns: ["organization_id", "id"]
-          },
-        ]
-      }
-      opt_outs: {
-        Row: {
-          contact_id: string
-          created_at: string
-          id: string
-          organization_id: string
-          phone_e164: string | null
-          reason: string | null
-          requested_at: string
-          revoked_at: string | null
-          status: string
-        }
-        Insert: {
-          contact_id: string
-          created_at?: string
-          id?: string
-          organization_id: string
-          phone_e164?: string | null
-          reason?: string | null
-          requested_at?: string
-          revoked_at?: string | null
-          status?: string
-        }
-        Update: {
-          contact_id?: string
-          created_at?: string
-          id?: string
-          organization_id?: string
-          phone_e164?: string | null
-          reason?: string | null
-          requested_at?: string
-          revoked_at?: string | null
-          status?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "opt_outs_organization_id_contact_id_fkey"
-            columns: ["organization_id", "contact_id"]
-            isOneToOne: false
-            referencedRelation: "contacts"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -1062,114 +844,176 @@ export type Database = {
         }
         Relationships: []
       }
-      proactive_approach_requests: {
+      persona_versions: {
         Row: {
-          authorization_confirmed: boolean
-          context: string | null
+          archived_at: string | null
+          archived_by_user_id: string | null
+          baseline_version_id: string | null
+          biography: Json
+          content_hash: string | null
+          created_at: string
+          created_by_user_id: string
+          diff_snapshot: Json | null
           id: string
+          identity: Json
+          instructions: Json
           operation_id: string
-          opportunity_id: string
           organization_id: string
-          requested_at: string
-          requested_by_user_id: string
+          persona_id: string
+          protected_rules: Json
+          published_at: string | null
+          published_by_user_id: string | null
           status: string
+          style_rules: Json
+          updated_at: string
+          validated_at: string | null
+          validated_by_user_id: string | null
+          validation_errors: Json
+          version: number
+          version_number: number
         }
         Insert: {
-          authorization_confirmed?: boolean
-          context?: string | null
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          biography?: Json
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id: string
+          diff_snapshot?: Json | null
           id?: string
+          identity?: Json
+          instructions?: Json
           operation_id: string
-          opportunity_id: string
           organization_id: string
-          requested_at?: string
-          requested_by_user_id: string
+          persona_id: string
+          protected_rules?: Json
+          published_at?: string | null
+          published_by_user_id?: string | null
           status?: string
+          style_rules?: Json
+          updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
+          version?: number
+          version_number: number
         }
         Update: {
-          authorization_confirmed?: boolean
-          context?: string | null
+          archived_at?: string | null
+          archived_by_user_id?: string | null
+          baseline_version_id?: string | null
+          biography?: Json
+          content_hash?: string | null
+          created_at?: string
+          created_by_user_id?: string
+          diff_snapshot?: Json | null
           id?: string
+          identity?: Json
+          instructions?: Json
           operation_id?: string
-          opportunity_id?: string
           organization_id?: string
-          requested_at?: string
-          requested_by_user_id?: string
+          persona_id?: string
+          protected_rules?: Json
+          published_at?: string | null
+          published_by_user_id?: string | null
           status?: string
+          style_rules?: Json
+          updated_at?: string
+          validated_at?: string | null
+          validated_by_user_id?: string | null
+          validation_errors?: Json
+          version?: number
+          version_number?: number
         }
         Relationships: [
           {
-            foreignKeyName: "proactive_approach_requests_organization_id_operation_id_fkey"
+            foreignKeyName: "persona_versions_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "persona_versions_organization_id_operation_id_fkey"
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
             referencedColumns: ["organization_id", "id"]
           },
           {
-            foreignKeyName: "proactive_approach_requests_organization_id_opportunity_id_fkey"
-            columns: ["organization_id", "opportunity_id"]
+            foreignKeyName: "persona_versions_organization_id_operation_id_persona_id_b_fkey"
+            columns: [
+              "organization_id",
+              "operation_id",
+              "persona_id",
+              "baseline_version_id",
+            ]
             isOneToOne: false
-            referencedRelation: "opportunities"
-            referencedColumns: ["organization_id", "id"]
+            referencedRelation: "persona_versions"
+            referencedColumns: [
+              "organization_id",
+              "operation_id",
+              "persona_id",
+              "id",
+            ]
+          },
+          {
+            foreignKeyName: "persona_versions_organization_id_operation_id_persona_id_fkey"
+            columns: ["organization_id", "operation_id", "persona_id"]
+            isOneToOne: false
+            referencedRelation: "personas"
+            referencedColumns: ["organization_id", "operation_id", "id"]
           },
         ]
       }
-      source_attributions: {
+      personas: {
         Row: {
-          attributed_at: string
-          contact_id: string
           created_at: string
-          details: Json
+          created_by_user_id: string
           id: string
+          internal_name: string
           operation_id: string
-          opportunity_id: string
           organization_id: string
-          source_label: string | null
-          source_type: string
+          status: string
+          updated_at: string
+          version: number
         }
         Insert: {
-          attributed_at?: string
-          contact_id: string
           created_at?: string
-          details?: Json
+          created_by_user_id: string
           id?: string
+          internal_name: string
           operation_id: string
-          opportunity_id: string
           organization_id: string
-          source_label?: string | null
-          source_type: string
+          status?: string
+          updated_at?: string
+          version?: number
         }
         Update: {
-          attributed_at?: string
-          contact_id?: string
           created_at?: string
-          details?: Json
+          created_by_user_id?: string
           id?: string
+          internal_name?: string
           operation_id?: string
-          opportunity_id?: string
           organization_id?: string
-          source_label?: string | null
-          source_type?: string
+          status?: string
+          updated_at?: string
+          version?: number
         }
         Relationships: [
           {
-            foreignKeyName: "source_attributions_organization_id_contact_id_fkey"
-            columns: ["organization_id", "contact_id"]
+            foreignKeyName: "personas_organization_id_fkey"
+            columns: ["organization_id"]
             isOneToOne: false
-            referencedRelation: "contacts"
-            referencedColumns: ["organization_id", "id"]
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "source_attributions_organization_id_operation_id_fkey"
+            foreignKeyName: "personas_organization_id_operation_id_fkey"
             columns: ["organization_id", "operation_id"]
             isOneToOne: false
             referencedRelation: "operations"
-            referencedColumns: ["organization_id", "id"]
-          },
-          {
-            foreignKeyName: "source_attributions_organization_id_opportunity_id_fkey"
-            columns: ["organization_id", "opportunity_id"]
-            isOneToOne: false
-            referencedRelation: "opportunities"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -1295,6 +1139,16 @@ export type Database = {
         }
         Returns: Json
       }
+      archive_context_drafts: {
+        Args: {
+          behavioral_version_id: string
+          factual_version_id: string
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
+      }
       complete_invitation_registration: {
         Args: {
           registration_email: string
@@ -1306,6 +1160,14 @@ export type Database = {
           request_trace_id: string
         }
         Returns: string
+      }
+      create_context_drafts: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+        }
+        Returns: Json
       }
       create_general_invitation_link: {
         Args: {
@@ -1335,24 +1197,6 @@ export type Database = {
           token: string
         }[]
       }
-      create_manual_lead: {
-        Args: {
-          amount_scope_value: string
-          internal_note_value: string
-          lead_name: string
-          lead_source: string
-          participant_name: string
-          participant_phone_original: string
-          pedro_context_value: string
-          phone_original: string
-          registration_action: string
-          request_correlation_id: string
-          request_trace_id: string
-          target_operation_id: string
-          unit_count_value: number
-        }
-        Returns: Json
-      }
       deactivate_membership_after_reauthentication: {
         Args: {
           actor_user_id: string
@@ -1368,8 +1212,8 @@ export type Database = {
           revoked_sessions: number
         }[]
       }
-      get_contact_merge_candidates: {
-        Args: { excluded_contact_id: string; target_operation_id: string }
+      get_context_workspace: {
+        Args: { target_operation_id: string }
         Returns: Json
       }
       get_invitation_entry: {
@@ -1379,14 +1223,6 @@ export type Database = {
           link_status: string
           organization_name: string
         }[]
-      }
-      get_lead_detail: {
-        Args: { target_opportunity_id: string }
-        Returns: Json
-      }
-      get_lead_list: {
-        Args: { target_operation_id: string; view_scope: string }
-        Returns: Json
       }
       get_member_deactivation_impact: {
         Args: { target_membership_id: string; target_operation_id: string }
@@ -1436,33 +1272,27 @@ export type Database = {
           production_enabled: boolean
         }[]
       }
-      get_pipeline_board: {
-        Args: { target_operation_id: string; view_scope: string }
-        Returns: Json
-      }
       get_team_management: {
         Args: { target_operation_id: string }
         Returns: Json
       }
-      merge_contacts: {
+      initialize_context_drafts: {
         Args: {
-          duplicate_contact_id: string
-          expected_duplicate_version: number
-          expected_primary_version: number
-          primary_contact_id: string
           request_correlation_id: string
           request_trace_id: string
           target_operation_id: string
         }
         Returns: Json
       }
-      reverse_contact_merge: {
+      publish_context: {
         Args: {
-          expected_duplicate_version: number
-          expected_primary_version: number
+          behavioral_expected_version: number
+          behavioral_version_id: string
+          factual_expected_version: number
+          factual_version_id: string
           request_correlation_id: string
           request_trace_id: string
-          target_contact_merge_id: string
+          target_operation_id: string
         }
         Returns: Json
       }
@@ -1478,14 +1308,6 @@ export type Database = {
           token: string
         }[]
       }
-      reopen_opportunity_on_inbound: {
-        Args: {
-          request_correlation_id: string
-          request_trace_id: string
-          target_opportunity_id: string
-        }
-        Returns: string
-      }
       reserve_invitation_registration: {
         Args: {
           registration_email: string
@@ -1498,6 +1320,31 @@ export type Database = {
           organization_id: string
           predefined_roles: string[]
         }[]
+      }
+      save_institutional_profile_draft: {
+        Args: {
+          expected_version: number
+          profile_fields: Json
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          target_version_id: string
+        }
+        Returns: Json
+      }
+      save_persona_draft: {
+        Args: {
+          expected_version: number
+          persona_biography: Json
+          persona_identity: Json
+          persona_instructions: Json
+          persona_style_rules: Json
+          request_correlation_id: string
+          request_trace_id: string
+          target_operation_id: string
+          target_version_id: string
+        }
+        Returns: Json
       }
       set_general_invitation_link_status: {
         Args: {
@@ -1512,15 +1359,15 @@ export type Database = {
           token: string
         }[]
       }
-      transition_opportunity: {
+      validate_context_drafts: {
         Args: {
-          expected_version: number
-          human_decision: boolean
+          behavioral_expected_version: number
+          behavioral_version_id: string
+          factual_expected_version: number
+          factual_version_id: string
           request_correlation_id: string
           request_trace_id: string
-          target_opportunity_id: string
-          target_stage: string
-          transition_reason: string
+          target_operation_id: string
         }
         Returns: Json
       }
@@ -1657,9 +1504,7 @@ export const Constants = {
   },
 } as const
 
-// Application aliases derived from the generated RPC contracts above.
 export type MemberWorkspace =
   Database["public"]["Functions"]["get_member_workspace_v2"]["Returns"][number]
-
 export type OperationShell =
   Database["public"]["Functions"]["get_operation_shell"]["Returns"][number]
