@@ -699,12 +699,14 @@ test("deactivation revokes sessions, stops Offers and returns human work without
 test("Dono creates an individual invitation with a predefined Corretor role", async ({
   page,
 }) => {
-  await page.goto("/entrar");
+  await page.goto(
+    "/entrar?next=%2Fapp%2Fconfiguracoes%2Fequipe",
+  );
   await page.getByLabel("E-mail").fill(ownerEmail);
   await page.getByLabel("Senha", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Entrar" }).click();
 
-  await page.goto("/app/configuracoes/equipe");
+  await expect(page).toHaveURL(/\/app\/configuracoes\/equipe$/);
   await expect(
     page.getByRole("heading", { name: "Equipe e papéis" }),
   ).toBeVisible();
@@ -770,17 +772,21 @@ test("sensitive deactivation requires the Dono password and revokes every sessio
   const peerRefreshToken = peerSignIn.data.session?.refresh_token;
   expect(peerRefreshToken).toBeTruthy();
 
-  await page.goto("/entrar");
+  await page.goto(
+    "/entrar?next=%2Fapp%2Fconfiguracoes%2Fequipe",
+  );
   await page.getByLabel("E-mail").fill(ownerEmail);
   await page.getByLabel("Senha", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Entrar" }).click();
-  await page.goto("/app/configuracoes/equipe");
+  await expect(page).toHaveURL(/\/app\/configuracoes\/equipe$/);
 
   let brokerCard = page
     .locator("article")
     .filter({ hasText: "Corretor de Confirmação" });
+  await expect(brokerCard).toBeVisible();
   await brokerCard
-    .getByRole("button", { name: "Ver impacto e desativar" })
+    .locator("summary")
+    .filter({ hasText: "Ver impacto e desativar" })
     .click();
   await brokerCard.getByLabel("Confirme sua senha").fill("senha-incorreta");
   await brokerCard
@@ -802,8 +808,10 @@ test("sensitive deactivation requires the Dono password and revokes every sessio
   brokerCard = page
     .locator("article")
     .filter({ hasText: "Corretor de Confirmação" });
+  await expect(brokerCard).toBeVisible();
   await brokerCard
-    .getByRole("button", { name: "Ver impacto e desativar" })
+    .locator("summary")
+    .filter({ hasText: "Ver impacto e desativar" })
     .click();
   await brokerCard.getByLabel("Confirme sua senha").fill(password);
   await brokerCard
