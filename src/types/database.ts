@@ -1142,6 +1142,7 @@ export type Database = {
           direction: string
           id: string
           idempotency_key: string | null
+          inbound_stream_sequence: number | null
           kind: string
           operation_id: string
           organization_id: string
@@ -1159,6 +1160,7 @@ export type Database = {
           direction: string
           id?: string
           idempotency_key?: string | null
+          inbound_stream_sequence?: number | null
           kind?: string
           operation_id: string
           organization_id: string
@@ -1176,6 +1178,7 @@ export type Database = {
           direction?: string
           id?: string
           idempotency_key?: string | null
+          inbound_stream_sequence?: number | null
           kind?: string
           operation_id?: string
           organization_id?: string
@@ -1945,6 +1948,110 @@ export type Database = {
           },
         ]
       }
+      scheduled_jobs: {
+        Row: {
+          aggregate_id: string
+          aggregate_sequence: number
+          aggregate_type: string
+          aggregate_version: number | null
+          attempts: number
+          causation_id: string | null
+          completed_at: string | null
+          contention_count: number
+          correlation_id: string
+          created_at: string
+          dedupe_key: string
+          effect_key: string
+          id: string
+          job_type: string
+          last_error_class: string | null
+          last_error_code: string | null
+          lease_token: string | null
+          lease_until: string | null
+          max_attempts: number
+          operation_id: string
+          organization_id: string
+          payload: Json
+          published_at: string | null
+          queue_message_id: number | null
+          run_at: string
+          status: string
+          target_queue: string
+          trace_id: string
+          updated_at: string
+        }
+        Insert: {
+          aggregate_id: string
+          aggregate_sequence: number
+          aggregate_type: string
+          aggregate_version?: number | null
+          attempts?: number
+          causation_id?: string | null
+          completed_at?: string | null
+          contention_count?: number
+          correlation_id: string
+          created_at?: string
+          dedupe_key: string
+          effect_key: string
+          id?: string
+          job_type: string
+          last_error_class?: string | null
+          last_error_code?: string | null
+          lease_token?: string | null
+          lease_until?: string | null
+          max_attempts?: number
+          operation_id: string
+          organization_id: string
+          payload?: Json
+          published_at?: string | null
+          queue_message_id?: number | null
+          run_at: string
+          status?: string
+          target_queue: string
+          trace_id: string
+          updated_at?: string
+        }
+        Update: {
+          aggregate_id?: string
+          aggregate_sequence?: number
+          aggregate_type?: string
+          aggregate_version?: number | null
+          attempts?: number
+          causation_id?: string | null
+          completed_at?: string | null
+          contention_count?: number
+          correlation_id?: string
+          created_at?: string
+          dedupe_key?: string
+          effect_key?: string
+          id?: string
+          job_type?: string
+          last_error_class?: string | null
+          last_error_code?: string | null
+          lease_token?: string | null
+          lease_until?: string | null
+          max_attempts?: number
+          operation_id?: string
+          organization_id?: string
+          payload?: Json
+          published_at?: string | null
+          queue_message_id?: number | null
+          run_at?: string
+          status?: string
+          target_queue?: string
+          trace_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scheduled_jobs_organization_id_operation_id_fkey"
+            columns: ["organization_id", "operation_id"]
+            isOneToOne: false
+            referencedRelation: "operations"
+            referencedColumns: ["organization_id", "id"]
+          },
+        ]
+      }
       source_attributions: {
         Row: {
           attributed_at: string
@@ -2312,6 +2419,29 @@ export type Database = {
         Args: { target_conversation_id: string }
         Returns: Json
       }
+      get_cron_runtime_health: { Args: never; Returns: Json }
+      get_durable_processing_alerts: {
+        Args: { maximum_alerts?: number; target_operation_id: string }
+        Returns: {
+          alert_id: string
+          correlation_id: string
+          created_at: string
+          dead_letter_id: string
+          effect_key_hash: string
+          failure_class: string
+          failure_code: string
+          resolved_at: string
+          scheduled_job_id: string
+          severity: string
+          source_queue: string
+          status: string
+          trace_id: string
+        }[]
+      }
+      get_durable_processing_health: {
+        Args: { target_operation_id: string }
+        Returns: Json
+      }
       get_inbox_list: { Args: { target_operation_id: string }; Returns: Json }
       get_invitation_entry: {
         Args: { invitation_token: string }
@@ -2457,6 +2587,54 @@ export type Database = {
         }
         Returns: string
       }
+      replay_dead_letter: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_dead_letter_id: string
+        }
+        Returns: Json
+      }
+      replay_dead_letter_t06_base: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_dead_letter_id: string
+        }
+        Returns: Json
+      }
+      replay_dead_letter_t06_nonreplayable_base: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_dead_letter_id: string
+        }
+        Returns: Json
+      }
+      replay_dead_letter_t06_payload_expiry_base: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_dead_letter_id: string
+        }
+        Returns: Json
+      }
+      replay_dead_letter_t06_review_base: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_dead_letter_id: string
+        }
+        Returns: Json
+      }
+      replay_dead_letter_t06_stream_fenced_base: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_dead_letter_id: string
+        }
+        Returns: Json
+      }
       reserve_invitation_registration: {
         Args: {
           registration_email: string
@@ -2469,6 +2647,14 @@ export type Database = {
           organization_id: string
           predefined_roles: string[]
         }[]
+      }
+      resolve_infrastructure_durable_alert: {
+        Args: {
+          request_correlation_id: string
+          request_trace_id: string
+          target_alert_id: string
+        }
+        Returns: Json
       }
       return_conversation_to_pedro: {
         Args: {
@@ -2489,6 +2675,10 @@ export type Database = {
           request_trace_id: string
           target_contact_merge_id: string
         }
+        Returns: Json
+      }
+      run_durable_workers: {
+        Args: { maximum_messages?: number }
         Returns: Json
       }
       save_institutional_profile_draft: {
