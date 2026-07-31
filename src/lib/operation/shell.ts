@@ -1,5 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
-import type { OperationShell } from "@/types/database";
+import type { MemberWorkspace, OperationShell } from "@/types/database";
+
+export async function getMemberWorkspace(): Promise<MemberWorkspace | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("get_member_workspace");
+
+  if (error) {
+    throw new Error("Não foi possível carregar a área de trabalho.");
+  }
+
+  return data[0] ?? null;
+}
 
 export async function getOperationShell(): Promise<OperationShell | null> {
   const supabase = await createClient();

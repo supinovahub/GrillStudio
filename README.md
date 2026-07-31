@@ -43,7 +43,8 @@ pnpm install --frozen-lockfile
 O app só inicia quando as variáveis de identidade e as credenciais públicas
 apontam de forma inequívoca para a Preview Branch do PR. Copie apenas os nomes
 de [`.env.example`](./.env.example); os valores são injetados pelo orquestrador
-e nunca são versionados.
+e nunca são versionados. E-mails de recuperação só saem para endereços
+explicitamente presentes em `PREVIEW_AUTH_EMAIL_ALLOWLIST`.
 
 ```bash
 pnpm dev

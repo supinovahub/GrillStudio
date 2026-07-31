@@ -1,4 +1,4 @@
-const DEFAULT_AUTH_REDIRECT = "/app/central";
+const DEFAULT_AUTH_REDIRECT = "/";
 
 export function safeInternalPath(
   candidate: string | null | undefined,

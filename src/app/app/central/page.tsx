@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/actions";
 import { getPreviewEnvironment } from "@/lib/environment";
 import { activateGlobalPauseAction } from "@/lib/operation/actions";
+import { getActiveMemberRole } from "@/lib/operation/membership";
 import { getOperationShell } from "@/lib/operation/shell";
 
 export const metadata: Metadata = {
@@ -43,12 +44,26 @@ export default async function CentralPage({
 }: {
   searchParams: PageSearchParams;
 }) {
-  const [shell, environment, params] = await Promise.all([
-    getOperationShell(),
+  const [memberRole, environment, params] = await Promise.all([
+    getActiveMemberRole(),
     Promise.resolve(getPreviewEnvironment()),
     searchParams,
   ]);
 
+  if (memberRole === "broker") {
+    redirect("/sem-permissao");
+  }
+
+  if (!memberRole) {
+    redirect("/aguardando-aprovacao");
+  }
+
+  const shell = await getOperationShell();
+
+  /*
+   * This is a defensive fallback for an inconsistent membership/operation
+   * assignment. Pending users are handled before this query.
+   */
   if (!shell) {
     redirect("/aguardando-aprovacao");
   }
@@ -155,10 +170,10 @@ export default async function CentralPage({
           <section className="central-heading">
             <div>
               <p className="eyebrow">Central da Operação</p>
-              <h1>O que precisa de você agora</h1>
+              <h1>Fundação da Operação</h1>
               <p>
-                Acompanhe riscos, decisões pendentes e o estado geral da
-                Operação.
+                Confirme a identidade, o ambiente e o estado de Pedro antes de
+                iniciar qualquer fluxo comercial.
               </p>
             </div>
             <div className="environment-card">
@@ -171,70 +186,38 @@ export default async function CentralPage({
 
           <section className="status-strip" aria-label="Estado da Operação">
             <div>
+              <span>Imobiliária</span>
+              <strong>{shell.organization_name}</strong>
+            </div>
+            <div>
+              <span>Operação</span>
+              <strong>{shell.operation_name}</strong>
+            </div>
+            <div>
+              <span>Perfil</span>
+              <strong>{roleLabel(shell.member_role)}</strong>
+            </div>
+            <div>
               <span>Pedro</span>
               <strong>{pedroState}</strong>
-            </div>
-            <div>
-              <span>Conversas ativas</span>
-              <strong>0 de 30</strong>
-            </div>
-            <div>
-              <span>Esperando</span>
-              <strong>0</strong>
-            </div>
-            <div>
-              <span>Saúde</span>
-              <strong>Fundação segura</strong>
             </div>
           </section>
 
           <div className="central-grid">
-            <section className="attention-panel" aria-labelledby="critical-title">
+            <section className="attention-panel wide" aria-labelledby="boundary-title">
               <div className="section-heading">
                 <div>
-                  <span className="severity severity-critical">Crítico agora</span>
-                  <h2 id="critical-title">Nenhum risco imediato</h2>
-                </div>
-                <span className="count-badge">0</span>
-              </div>
-              <p className="empty-copy">
-                Calls sem responsável, erros críticos e alertas urgentes
-                aparecerão aqui.
-              </p>
-            </section>
-
-            <section className="attention-panel" aria-labelledby="action-title">
-              <div className="section-heading">
-                <div>
-                  <span className="severity severity-action">Precisa de ação</span>
-                  <h2 id="action-title">Tudo em dia</h2>
-                </div>
-                <span className="count-badge">0</span>
-              </div>
-              <p className="empty-copy">
-                Escalonamentos, resultados ausentes e aprovações ficarão
-                visíveis nesta fila.
-              </p>
-            </section>
-
-            <section className="attention-panel wide" aria-labelledby="follow-title">
-              <div className="section-heading">
-                <div>
-                  <span className="severity severity-follow">Acompanhar</span>
-                  <h2 id="follow-title">Operação pronta para validação</h2>
-                </div>
-                <span className="count-badge">1</span>
-              </div>
-              <div className="follow-row">
-                <div>
-                  <strong>Preview Branch confirmada</strong>
-                  <p>
-                    Esta sessão usa exclusivamente a branch efêmera vinculada
-                    ao PR #{environment.prNumber}.
-                  </p>
+                  <span className="severity severity-follow">Limite da execução</span>
+                  <h2 id="boundary-title">Preview Branch do PR #{environment.prNumber}</h2>
                 </div>
                 <span className="safe-badge">Isolada</span>
               </div>
+              <p className="empty-copy">
+                O servidor recusa a inicialização se a referência do projeto,
+                a branch ou o número do PR não coincidirem. Esta interface não
+                informa métricas comerciais que ainda não foram carregadas de
+                uma fonte canônica.
+              </p>
             </section>
 
             {shell.can_use_kill_switch ? (

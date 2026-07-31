@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { getRequestContext } from "@/lib/auth/context";
+import { isPreviewAuthEmailAllowed } from "@/lib/auth/email-policy";
 import { safeInternalPath } from "@/lib/auth/redirects";
 import { writeLog } from "@/lib/observability";
 import { createClient } from "@/lib/supabase/server";
@@ -62,6 +63,19 @@ export async function requestPasswordResetAction(formData: FormData) {
     redirect("/recuperar-senha?erro=campos");
   }
 
+  if (
+    !isPreviewAuthEmailAllowed(
+      email,
+      process.env.PREVIEW_AUTH_EMAIL_ALLOWLIST,
+    )
+  ) {
+    writeLog("auth.password_recovery_requested", {
+      ...context,
+      outcome: "denied",
+    });
+    redirect("/recuperar-senha?enviado=1");
+  }
+
   const supabase = await createClient();
   const redirectTo = new URL("/auth/callback", appBaseUrl());
   redirectTo.searchParams.set("next", "/redefinir-senha");
@@ -116,7 +130,11 @@ export async function signOutOtherSessionsAction() {
     outcome: error ? "failed" : "succeeded",
   });
 
-  redirect(error ? "/app/central?sesso=erro" : "/app/central?sesso=outras-encerradas");
+  redirect(
+    error
+      ? "/app/central?sessao=erro"
+      : "/app/central?sessao=outras-encerradas",
+  );
 }
 
 export async function signOutAllSessionsAction() {
@@ -129,5 +147,5 @@ export async function signOutAllSessionsAction() {
     outcome: error ? "failed" : "succeeded",
   });
 
-  redirect("/entrar?sesso=encerrada");
+  redirect("/entrar?sessao=encerrada");
 }

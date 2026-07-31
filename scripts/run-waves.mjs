@@ -309,6 +309,11 @@ function resolvePreviewEnvironment(worktree, branch, prNumber) {
     NEXT_PUBLIC_SUPABASE_ANON_KEY: publicKey,
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: publicKey,
     NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
+    PLAYWRIGHT_BROWSERS_PATH: path.join(
+      worktree,
+      ".orchestrator",
+      "playwright",
+    ),
     SUPABASE_ANON_KEY: publicKey,
     SUPABASE_BRANCH_NAME: branch,
     SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
@@ -356,11 +361,17 @@ function verifyImplementation(worktree, environment) {
     "typecheck",
     "test:unit",
     "build",
-    "test:blackbox",
   ]) {
     if (packageHasScript(worktree, script, environment)) {
       run("pnpm", [script], { cwd: worktree, env: environment });
     }
+  }
+  if (packageHasScript(worktree, "test:blackbox", environment)) {
+    run("pnpm", ["exec", "playwright", "install", "chromium"], {
+      cwd: worktree,
+      env: environment,
+    });
+    run("pnpm", ["test:blackbox"], { cwd: worktree, env: environment });
   }
 }
 
