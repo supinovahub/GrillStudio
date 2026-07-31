@@ -563,14 +563,14 @@ begin
     raise exception 'manager can only invite brokers' using errcode = '42501';
   end if;
 
-  update public.invitations
+  update public.invitations as invitation
   set
     status = 'revoked',
     revoked_at = now(),
     version = version + 1
-  where organization_id = actor_membership.organization_id
-    and lower(email) = normalized_email
-    and status = 'active';
+  where invitation.organization_id = actor_membership.organization_id
+    and lower(invitation.email) = normalized_email
+    and invitation.status = 'active';
 
   insert into public.invitations (
     organization_id,
@@ -677,9 +677,9 @@ begin
 
   if exists (
     select 1
-    from public.invitation_links
-    where organization_id = actor_membership.organization_id
-      and status in ('active', 'paused')
+    from public.invitation_links as invitation_link
+    where invitation_link.organization_id = actor_membership.organization_id
+      and invitation_link.status in ('active', 'paused')
   ) then
     raise exception 'active general invitation link already exists'
       using errcode = '23505';
@@ -970,7 +970,7 @@ grant execute on function public.get_invitation_entry(uuid)
 create or replace function public.reserve_invitation_registration(
   registration_token uuid,
   registration_email text,
-  request_fingerprint text
+  registration_fingerprint text
 )
 returns table (
   invitation_kind text,
@@ -997,7 +997,7 @@ begin
   into recent_attempt_count
   from private.invitation_registration_attempts
   where invitation_token = registration_token
-    and invitation_registration_attempts.request_fingerprint = request_fingerprint
+    and invitation_registration_attempts.request_fingerprint = registration_fingerprint
     and attempted_at >= now() - interval '15 minutes';
 
   if recent_attempt_count >= 5 then
@@ -1011,7 +1011,7 @@ begin
   )
   values (
     registration_token,
-    request_fingerprint
+    registration_fingerprint
   );
 
   return query
