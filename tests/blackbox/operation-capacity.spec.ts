@@ -132,25 +132,101 @@ test("aplica janelas semiabertas no fuso da Operação", async () => {
   });
 });
 
-test("mantém prioridades e atrasos como política fixa do MVP", async () => {
+test("usa o fuso canônico da Operação e falha fechado nos limites", async () => {
+  await database`
+    update public.operations
+    set timezone = 'America/Manaus'
+    where id = ${operationId}::uuid
+  `;
+
+  const boundaries = await database<
+    Array<{
+      inbound_at_five: boolean;
+      inbound_at_midnight: boolean;
+      next_inbound_open: Date;
+      null_inbound_open: boolean;
+      null_next_open: Date | null;
+    }>
+  >`
+    select
+      private.is_operation_inbound_open(
+        ${operationId}::uuid,
+        '2026-07-31T09:00:00Z'::timestamptz
+      ) as inbound_at_five,
+      private.is_operation_inbound_open(
+        ${operationId}::uuid,
+        '2026-08-01T04:00:00Z'::timestamptz
+      ) as inbound_at_midnight,
+      private.next_operation_window_open(
+        ${operationId}::uuid,
+        '2026-08-01T04:00:00Z'::timestamptz,
+        'inbound'
+      ) as next_inbound_open,
+      private.is_operation_inbound_open(
+        ${operationId}::uuid,
+        null
+      ) as null_inbound_open,
+      private.next_operation_window_open(
+        ${operationId}::uuid,
+        null,
+        'inbound'
+      ) as null_next_open
+  `;
+
+  expect(boundaries[0]).toEqual({
+    inbound_at_five: true,
+    inbound_at_midnight: false,
+    next_inbound_open: new Date("2026-08-01T09:00:00.000Z"),
+    null_inbound_open: false,
+    null_next_open: null,
+  });
+
+  await expect(
+    database`
+      update public.operation_settings
+      set inbound_close_minute = inbound_open_minute
+      where operation_id = ${operationId}::uuid
+    `,
+  ).rejects.toMatchObject({ code: "23514" });
+  await expect(
+    database`
+      update public.operations
+      set timezone = 'Mars/Olympus_Mons'
+      where id = ${operationId}::uuid
+    `,
+  ).rejects.toMatchObject({ code: "22023" });
+
+  await database`
+    update public.operations
+    set timezone = 'America/Sao_Paulo'
+    where id = ${operationId}::uuid
+  `;
+});
+
+test("não enfileira opt-out nem inventa ranking para pending return", async () => {
   const policy = await database<
     Array<{
       demand_delay: number;
       long_delay: number;
-      ordered_priorities: number[];
+      opt_out_priority: number | null;
+      ordered_priorities: Array<number | null>;
+      pending_return_priority: number | null;
       short_delay: number;
     }>
   >`
     select
       array[
         private.capacity_priority_for_kind('urgent_call'),
-        private.capacity_priority_for_kind('opt_out'),
         private.capacity_priority_for_kind('sleeping_return'),
         private.capacity_priority_for_kind('active_reply'),
         private.capacity_priority_for_kind('new_inbound'),
         private.capacity_priority_for_kind('followup'),
         private.capacity_priority_for_kind('campaign')
       ]::integer[] as ordered_priorities,
+      private.capacity_priority_for_kind('opt_out') as opt_out_priority,
+      private.capacity_priority_for_kind(
+        'pending_return'
+      ) as pending_return_priority,
       private.capacity_delay_seconds('short', false) as short_delay,
       private.capacity_delay_seconds('long', false) as long_delay,
       private.capacity_delay_seconds('long', true) as demand_delay
@@ -159,9 +235,62 @@ test("mantém prioridades e atrasos como política fixa do MVP", async () => {
   expect(policy[0]).toEqual({
     demand_delay: 3,
     long_delay: 42,
-    ordered_priorities: [1, 2, 3, 4, 5, 6, 7],
+    opt_out_priority: null,
+    ordered_priorities: [1, 3, 4, 5, 6, 7],
+    pending_return_priority: null,
     short_delay: 8,
   });
+});
+
+test("fixa FIFO monotônico e referências tenant-aware no catálogo", async () => {
+  const contract = await database<
+    Array<{
+      batch_fk: string;
+      fifo_key: string;
+      message_fk: string;
+      revision_fk: string;
+      source_fk: string;
+    }>
+  >`
+    select
+      pg_get_constraintdef(fifo.oid) as fifo_key,
+      pg_get_constraintdef(source.oid) as source_fk,
+      pg_get_constraintdef(batch.oid) as batch_fk,
+      pg_get_constraintdef(message.oid) as message_fk,
+      pg_get_constraintdef(revision.oid) as revision_fk
+    from pg_constraint as fifo
+    cross join pg_constraint as source
+    cross join pg_constraint as batch
+    cross join pg_constraint as message
+    cross join pg_constraint as revision
+    where fifo.conname =
+        'operation_capacity_backlog_operation_fifo_key'
+      and source.conname =
+        'operation_capacity_backlog_source_message_tenant_fkey'
+      and batch.conname =
+        'pedro_response_batch_messages_batch_tenant_fkey'
+      and message.conname =
+        'pedro_response_batch_messages_message_tenant_fkey'
+      and revision.conname =
+        'provider_message_revisions_target_message_tenant_fkey'
+  `;
+
+  expect(contract).toHaveLength(1);
+  expect(contract[0].source_fk).toContain(
+    "organization_id, operation_id, conversation_id, source_message_id",
+  );
+  expect(contract[0].batch_fk).toContain(
+    "organization_id, operation_id, conversation_id, batch_id",
+  );
+  expect(contract[0].message_fk).toContain(
+    "organization_id, operation_id, conversation_id, message_id",
+  );
+  expect(contract[0].revision_fk).toContain(
+    "organization_id, operation_id, connection_id, target_message_id, target_provider_message_id",
+  );
+  expect(contract[0].fifo_key).toContain(
+    "UNIQUE (operation_id, fifo_sequence)",
+  );
 });
 
 test("inicializa estado sem expor tabelas privadas", async () => {
